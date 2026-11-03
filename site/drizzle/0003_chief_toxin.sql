@@ -1,0 +1,1 @@
+ALTER TABLE `app_users` ADD `platform_owner_id` text;

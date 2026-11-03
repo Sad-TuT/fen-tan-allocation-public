@@ -1,0 +1,26 @@
+# Dependencies, builds, local data, and credentials
+node_modules/
+.next/
+dist/
+coverage/
+.env*
+*.sqlite
+*.sqlite-*
+*.db
+*.xlsx
+*.xls
+*.csv
+*.pem
+*.key
+*.p12
+*.pfx
+.ssh/
+backups/
+outputs/
+work/
+work-runtime-tests/
+.proxy-probe/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+.DS_Store

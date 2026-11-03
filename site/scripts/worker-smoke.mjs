@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';import{readFile,writeFile,mkdir}from'node:fs/promises';
+const origin='http://127.0.0.1:8787',headers={'oai-authenticated-user-id':'local_worker_acceptance','oai-authenticated-user-email':'worker@sites.test'};
+const anonymous=await fetch(origin+'/api/workspace');assert.equal(anonymous.status,401);
+const response=await fetch(origin+'/api/workspace',{headers});const state=await response.json();assert.equal(response.status,200,JSON.stringify(state));
+assert.equal(state.sources.length,2);assert.equal(state.sources.reduce((a,s)=>a+s.availableCents,0),40000);
+const simulate=await fetch(origin+'/api/workspace',{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({action:'simulate',product:'Worker环境验收',price:'33',quantity:3})});const planned=await simulate.json();assert.equal(simulate.status,200,JSON.stringify(planned));assert.equal(planned.plan.totalCents,9900);
+const form=new FormData();form.set('action','prepare');form.set('version',String(state.version));form.set('product','Worker环境验收');form.set('price','33');form.set('quantity','3');form.set('file',new Blob([await readFile('work/browser-fixtures/template.xlsx')]),'template.xlsx');
+const result=await fetch(origin+'/api/workspace',{method:'POST',headers,body:form});const batch=await result.json();assert.equal(result.status,200,JSON.stringify(batch));assert.equal(batch.data.manifest.length,6);assert.equal(batch.status,'awaiting_review');
+const latest=await(await fetch(origin+'/api/workspace',{headers})).json();assert.equal(latest.version,state.version);assert.equal(latest.sources.reduce((a,s)=>a+s.availableCents,0),40000);
+const mcp=await fetch(origin+'/mcp',{method:'POST',headers:{...headers,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})});const tools=await mcp.json();assert.equal(tools.result.tools.length,5);
+const summary={status:'passed',anonymousStatus:anonymous.status,workerSimulatedAmountCents:planned.plan.totalCents,generatedFiles:batch.data.manifest.length,batchId:batch.id,versionBefore:state.version,versionAfter:latest.version,unchangedBalanceCents:40000,mcpToolCount:tools.result.tools.length};await mkdir('work/acceptance',{recursive:true});await writeFile('work/acceptance/worker-smoke.json',JSON.stringify(summary,null,2));console.log(summary);

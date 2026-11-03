@@ -1,0 +1,1 @@
+CREATE INDEX `app_auth_limits_window` ON `app_auth_limits` (`window_start`);

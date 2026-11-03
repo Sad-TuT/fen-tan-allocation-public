@@ -1,0 +1,6 @@
+interface:
+  display_name: "费用分摊与开票"
+  short_description: "按六项信息精确分摊费用，补全开票明细并生成标红及剩余金额表"
+  default_prompt: "使用 $invoice-cost-allocation，根据本次来源金额表、开票模板、税务主体表和商品单价与总额，完成分摊、开票明细、已用标红及剩余表。"
+policy:
+  allow_implicit_invocation: true
