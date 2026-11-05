@@ -46,6 +46,7 @@
 - 登录限流密钥通过 `ALLOCATION_RATE_KEY_FILE` 指向的受限文件提供；两名复核者必须分别使用 `ALLOCATION_REVIEWER_A_TOKEN_FILE` 和 `ALLOCATION_REVIEWER_B_TOKEN_FILE`，正式入账控制使用独立的 `ALLOCATION_COMMIT_TOKEN_FILE`，Skill 账簿同步使用 `ALLOCATION_SYNC_TOKEN_FILE`。网页入账按钮会临时要求输入入账控制口令，MCP 入账也必须使用独立入账控制凭据；普通登录账号和复核凭据都不能越过该门禁。报告中的 `reviewerId` 必须分别写成 `codex-reviewer-a` 和 `codex-reviewer-b`，后端会把自报身份与本次凭据身份绑定，并拒绝同一凭据提交两份报告。文件应归运行账号所有，使用足够随机的十六进制值，且不能进入 Git 仓库。生产环境可参考 `scripts/server-pm2.config.cjs`。
 - DeepSeek 功能可选配置 `DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY_FILE`；也可在数据目录的 `secrets/deepseek-key` 放置受限密钥文件。调用 AI 时，相关描述、账簿摘要或批次数据会发送给服务提供方；AI 结果仅供参考，不能替代双重独立核验。
 - 通过 HTTPS 对外服务时，设置 `ALLOCATION_PUBLIC_ORIGIN` 为正确的 HTTPS 源，并由可信反向代理验证主机名、覆盖转发头和配置证书；如有多个严格受控入口，可用英文逗号分隔完整 HTTPS 源，任何空项、非 HTTPS 或带路径/账户的无效项都会让公网入口整体拒绝。Node 服务继续仅监听本机。
-- `scripts/allocation-backup.mjs` 可按环境变量指定的数据和备份目录创建备份，并检查 SQLite/对象引用及恢复流程。`scripts/scheduled-maintenance.sh` 会先做数据库与对象备份，再拉取最新网站账簿 Excel 快照；生产环境可按当天分摊节奏安排定时执行。备份必须与源码和凭据分开保护。
+- Next.js 会统一发送 CSP、HSTS、`nosniff`、禁止嵌入、Referrer Policy 和 Permissions Policy 等安全响应头。上传接口在完整解析前限制请求体，并最多同时处理两份 XLSX/JSON；超限请求返回明确的 413 或 429，避免复杂压缩文件占满 Node 主进程。
+- `scripts/allocation-backup.mjs` 可按环境变量指定的数据和备份目录创建备份，并检查 SQLite/对象引用及恢复流程。`scripts/scheduled-maintenance.sh` 会先做数据库与对象备份，再拉取最新网站账簿 Excel 快照；生产环境可按当天分摊节奏安排定时执行。备份必须与源码和凭据分开保护。当前脚本负责同机备份；生产环境还应把已验证备份复制到独立机器或对象存储，并对定时任务失败配置外部告警。
 
 本仓库仅提供代码和合成测试，不提供账号、密钥、客户数据或历史账簿。旧规则下创建的待入账批次必须重新试算并双重核验。Skill 附带的旧版单来源脚本不支持本规则，不能用于替代网站的新规则核验。
