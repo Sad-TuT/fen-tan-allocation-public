@@ -52,3 +52,42 @@ test('backup rejects SQLite workspace, review and event orphan references',()=>{
   assert.equal(readdirSync(dest).filter(x=>x.startsWith('backup-')).length,0,orphan);
  }
 });
+
+test('backup validates immutable per-batch input and result object digests',()=>{
+ const base=mkdtempSync(path.join(work,'processing-object-validation-'));
+ const data=path.join(base,'data'),dest=path.join(base,'backups');mkdirSync(data,{recursive:true});
+ const db=new DatabaseSync(path.join(data,'ledger.sqlite'));
+ db.exec(`CREATE TABLE allocation_workspace(id TEXT PRIMARY KEY,version INTEGER NOT NULL DEFAULT 0,data_key TEXT,last_batch_id TEXT,updated_at TEXT NOT NULL);
+  CREATE TABLE allocation_batches(id TEXT PRIMARY KEY,data_key TEXT NOT NULL);
+  CREATE TABLE allocation_reviews(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL,data_key TEXT);
+  CREATE TABLE allocation_events(id TEXT PRIMARY KEY,batch_id TEXT,data_key TEXT);
+  CREATE TABLE app_users(id TEXT PRIMARY KEY);
+  CREATE TABLE processing_jobs(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES app_users(id),parent_job_id TEXT REFERENCES processing_jobs(id),status TEXT NOT NULL,data_key TEXT NOT NULL);
+  INSERT INTO app_users(id) VALUES ('synthetic-owner');`);
+ const input=Buffer.from('synthetic per-batch remaining source'),output=Buffer.from('synthetic candidate workbook');
+ writeObject(data,'processing-jobs/job-1/inputs/source.xlsx',input,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+ writeObject(data,'processing-jobs/job-1/results/candidate.xlsx',output,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+ writeObject(data,'processing-jobs/job-1/state.json',JSON.stringify({
+   files:[
+     {role:'source',fileKey:'processing-jobs/job-1/inputs/source.xlsx',sha256:h(input)},
+     {role:'invoice',key:'processing-jobs/job-1/results/candidate.xlsx',sha256:h(output)},
+   ],
+ }));
+ db.prepare("INSERT INTO processing_jobs VALUES ('job-1','synthetic-owner',NULL,'prepared','processing-jobs/job-1/state.json')").run();
+ db.close();
+ const env={ALLOCATION_DATA_DIR:data,ALLOCATION_BACKUP_DIR:dest,ALLOCATION_BACKUP_KEEP:'2'};
+ const good=run(env);assert.equal(good.status,0,good.stderr);
+ const meta=JSON.parse(good.stdout);assert.equal(meta.restoreTest,'passed');assert.equal(meta.checks,2);
+ assert.equal(run(env,['verify',meta.backup]).status,0);
+
+ writeObject(data,'processing-jobs/job-1/inputs/source.xlsx',Buffer.from('tampered input'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+ const badInput=run(env);assert.notEqual(badInput.status,0);
+ assert.match(badInput.stderr,/processing-jobs[\\/]job-1[\\/]inputs[\\/]source\.xlsx/);
+ assert.equal(readdirSync(dest).filter(name=>name.startsWith('backup-')).length,1);
+
+ writeObject(data,'processing-jobs/job-1/inputs/source.xlsx',input,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+ writeObject(data,'processing-jobs/job-1/results/candidate.xlsx',Buffer.from('tampered output'),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+ const badOutput=run(env);assert.notEqual(badOutput.status,0);
+ assert.match(badOutput.stderr,/processing-jobs[\\/]job-1[\\/]results[\\/]candidate\.xlsx/);
+ assert.equal(readdirSync(dest).filter(name=>name.startsWith('backup-')).length,1);
+});

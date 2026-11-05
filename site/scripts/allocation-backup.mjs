@@ -48,6 +48,11 @@ function inspectDb(file){
   const rows=[];
   for(const name of ['allocation_workspace','allocation_batches','allocation_reviews'])
    for(const x of db.prepare(`SELECT data_key FROM ${name} WHERE data_key IS NOT NULL`).all())rows.push(x.data_key);
+  // The per-batch file workspace was introduced later than the shared ledger.
+  // Keep backups compatible with pre-migration databases while validating every
+  // immutable task snapshot once the table exists.
+  if(db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='processing_jobs'").get())
+   for(const x of db.prepare('SELECT data_key FROM processing_jobs WHERE data_key IS NOT NULL').all())rows.push(x.data_key);
   return rows;
  }finally{db.close();}
 }
@@ -55,7 +60,7 @@ async function validateReferences(dir){
  const keys=inspectDb(path.join(dir,'ledger.sqlite'));
  const objectRoot=path.join(dir,'objects');
  async function get(key){return objectBytes(await readFile(within(objectRoot,key)));}
- function find(x,out){if(!x||typeof x!=='object')return;if(!Array.isArray(x)){const candidate=typeof x.fileKey==='string'?x.fileKey:typeof x.key==='string'?x.key:null;const k=candidate&&/^(inputs|taxes|tax-overrides|batches|outputs|workspace|reviews)\//.test(candidate)?candidate:null;if(k){if(typeof x.sha256!=='string'||!/^[a-f0-9]{64}$/i.test(x.sha256))throw new Error(`Referenced object missing valid digest: ${k}`);out.push([safeKey(k),x.sha256.toLowerCase()]);}for(const v of Object.values(x))find(v,out);}else for(const v of x)find(v,out);}
+ function find(x,out){if(!x||typeof x!=='object')return;if(!Array.isArray(x)){const candidate=typeof x.fileKey==='string'?x.fileKey:typeof x.key==='string'?x.key:null;const k=candidate&&/^(inputs|taxes|tax-overrides|batches|outputs|workspace|reviews|processing-jobs)\//.test(candidate)?candidate:null;if(k){if(typeof x.sha256!=='string'||!/^[a-f0-9]{64}$/i.test(x.sha256))throw new Error(`Referenced object missing valid digest: ${k}`);out.push([safeKey(k),x.sha256.toLowerCase()]);}for(const v of Object.values(x))find(v,out);}else for(const v of x)find(v,out);}
  let checked=0;
  for(const key of keys){const bytes=await get(safeKey(key));let json;try{json=JSON.parse(bytes.toString('utf8'));}catch{throw new Error('Referenced state JSON cannot be decoded');}const refs=[];find(json,refs);const unique=new Map(refs);for(const [k,expected] of unique){if(sha(await get(k))!==expected)throw new Error(`Referenced object digest mismatch: ${k}`);checked++;}}
  return {stateObjects:keys.length,checks:checked};
