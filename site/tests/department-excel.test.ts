@@ -28,7 +28,7 @@ const makeRow=(amount:number,department:string,useCenter:string)=>(['员工甲',
 test('generated workbook preserves each raw department field, outputs unique nonblank values and reconciles FIFO across sources',async()=>{
  const a=await input('合成第一表.xlsx',1,[makeRow(105,'','')]);const b=await input('合成第二表.xlsx',2,[makeRow(396,'甲部门','甲中心')]);
  const sources=[a.source,b.source];const plan=planAllocation(sources,10000,2);
- const generated=await io.generateBatchFiles({batchId:'synthetic',product:'合成商品',priceCents:10000,quantity:2,sources,plan,taxes:[],sourceBuffers:{[a.source.id]:a.data,[b.source.id]:b.data},template:await invoiceTemplate(),productHistory:[]});
+ const generated=await io.generateBatchFiles({batchId:'synthetic',batchCreatedAt:'2026-11-05T00:00:00.000Z',product:'合成商品',priceCents:10000,quantity:2,sources,plan,taxes:[],sourceBuffers:{[a.source.id]:a.data,[b.source.id]:b.data},template:await invoiceTemplate(),productHistory:[]});
  assert.equal(generated.files.length,6);const invoice=(await open(generated.files.find((f:any)=>f.role==='invoice').bytes)).worksheets[0];
  assert.equal(scalar(invoice.getCell('A1')),'EP-SYNTHETIC');assert.equal(scalar(invoice.getCell('B4')),'甲部门');assert.equal(scalar(invoice.getCell('C4')),'甲中心');
  assert.equal(scalar(invoice.getCell('E4')),200);assert.equal(scalar(invoice.getCell('J4')),2);assert.equal(scalar(invoice.getCell('K4')),200);
@@ -44,7 +44,7 @@ test('generated workbook preserves each raw department field, outputs unique non
 });
 test('nonused but compatible source row still determines invoice display and complete group amount',async()=>{
  const a=await input('合成.xlsx',1,[makeRow(100,'',''),makeRow(301,'甲部门','甲中心')]);const sources=[a.source];const plan=planAllocation(sources,10000,1);
- const generated=await io.generateBatchFiles({batchId:'synthetic2',product:'合成商品',priceCents:10000,quantity:1,sources,plan,taxes:[],sourceBuffers:{[a.source.id]:a.data},template:await invoiceTemplate(),productHistory:[]});
+ const generated=await io.generateBatchFiles({batchId:'synthetic2',batchCreatedAt:'2026-11-05T00:00:00.000Z',product:'合成商品',priceCents:10000,quantity:1,sources,plan,taxes:[],sourceBuffers:{[a.source.id]:a.data},template:await invoiceTemplate(),productHistory:[]});
  const invoice=(await open(generated.files.find((f:any)=>f.role==='invoice').bytes)).worksheets[0];assert.equal(scalar(invoice.getCell('B4')),'甲部门');assert.equal(scalar(invoice.getCell('C4')),'甲中心');
  const remain=(await open(generated.files.find((f:any)=>f.role===`${a.source.id}_remaining`).bytes)).worksheets[0];assert.equal(scalar(remain.getCell('E4')),301);assert.equal(scalar(remain.getCell('B4')),'甲部门');assert.equal(scalar(remain.getCell('C4')),'甲中心');
 });

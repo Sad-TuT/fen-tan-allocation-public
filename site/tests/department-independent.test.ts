@@ -20,7 +20,7 @@ function independentlyVerify(sources:any[],price:number,quantity:number,plan:any
   const members=all.filter((r:any)=>key(r)===key(group)&&(!filled(r.department)||!filled(group.department)||r.department===group.department)&&(!filled(r.useCenter)||!filled(group.useCenter)||r.useCenter===group.useCenter));
   for(const field of ['department','useCenter'] as const){const vals=[...new Set(members.map((r:any)=>r[field]).filter(filled))];if(vals.length>1)issues.push('conflict '+field);const expected=vals.length===1?vals[0]:'';if(group[field]!==expected)issues.push('incorrect display '+field);}
   const available=members.reduce((n:number,r:any)=>n+r.amountCents,0);if(group.availableCents!==available)issues.push('unaccounted eligible source row');
-  if(group.usedCents!==price*group.quantity)issues.push('price mismatch');const rem=available-group.usedCents;if(!(rem===0||(rem>30000&&rem%100===0))||group.remainderCents!==rem)issues.push('bad full-group remainder');
+  if(group.usedCents!==price*group.quantity)issues.push('price mismatch');const rem=available-group.usedCents;if(!(rem===0||(rem>=30000&&rem%100===0))||group.remainderCents!==rem)issues.push('bad full-group remainder');
   for(const use of group.sourceUses){const id=use.sourceId+'|'+use.rowId;if(seen.has(id))issues.push('duplicate row');seen.add(id);const src=members.find((r:any)=>r.id===use.rowId&&r.sourceId===use.sourceId);if(!src||src.amountCents!==use.originalCents||use.usedCents+use.remainingCents!==src.amountCents)issues.push('bad use or source trace');perSource.set(use.sourceId,(perSource.get(use.sourceId)??0)+use.usedCents);}
   if(group.sourceUses.reduce((n:number,u:any)=>n+u.usedCents,0)!==group.usedCents)issues.push('inconsistent group usage');sum+=group.usedCents;
  }
@@ -35,9 +35,13 @@ test('blank fields reconcile to unique values even when only the blank row was u
  assert.equal(plan.groups.length,1);assert.equal(plan.groups[0].department,'部门甲');assert.equal(plan.groups[0].useCenter,'中心甲');assert.equal(plan.groups[0].remainderCents,30100);
  const bad=structuredClone(plan);bad.groups[0].department='';assert.ok(independentlyVerify(sources,10000,1,bad).some(x=>x.includes('display')));
 });
-test('unused compatible amount belongs to the same group and cannot conceal a 300 yuan remainder',()=>{
+test('a 300 yuan whole-group remainder is allowed even when unused compatible amount is present',()=>{
  const sources=[source('s1',1,[row(10000),row(30000,{department:'部门甲'})])];
- assert.throws(()=>planAllocation(sources,10000,1));
+ const plan=planAllocation(sources,10000,4);assert.equal(plan.groups[0].remainderCents,0);
+ const boundary=source('s1',1,[row(40000,{department:'部门甲'})]);
+ assert.equal(planAllocation([boundary],10000,1).groups[0].remainderCents,30000);
+ const below=source('s1',1,[row(39999,{department:'部门甲'})]);
+ assert.throws(()=>planAllocation([below],10000,1));
 });
 test('cross-source compatible rows preserve priority, whole-group remainder and original fields',()=>{
  const sources=[source('s1',1,[row(10500)]),source('s2',2,[row(39600,{department:'部门甲',useCenter:'中心甲'})])];

@@ -140,6 +140,14 @@ def load(path):
             openpyxl.load_workbook(path, data_only=True))
 
 
+def conditional_formatting_on_cost(sheet, column, header_row):
+    for conditional in sheet.conditional_formatting:
+        for region in conditional.sqref.ranges:
+            if region.min_col <= column <= region.max_col and region.max_row > header_row:
+                return True
+    return False
+
+
 def fields_at(sheet, row, columns):
     return {field: sheet.cell(row, columns[field]).value for field in FIELDS}
 
@@ -185,6 +193,9 @@ def audit(args, result, checks):
 
     srcf, srcv = load(inputs['source'])
     source, sh, sc = locate(srcf, SOURCE, plan.get('source_sheet'))
+    checks.need(not conditional_formatting_on_cost(source, sc['amount'], sh),
+                'source_cost_column_has_no_unverifiable_conditional_formatting',
+                {'sheet': source.title, 'column': sc['amount'], 'header_row': sh})
     source_values = srcv[source.title]
     invf, invv = load(paths['invoice'])
     invoice, ih, ic = locate(invf, INVOICE, plan.get('template_sheet'))
@@ -252,7 +263,7 @@ def audit(args, result, checks):
         checks.equal(row_total, used, f'invoice_total_equals_department_amount:{row}')
         checks.check(0 < used <= available, f'invoice_group_not_overdrawn:{row}')
         remainder = available - used
-        checks.check(remainder == 0 or (remainder > 30000 and remainder % 100 == 0),
+        checks.check(remainder == 0 or (remainder >= 30000 and remainder % 100 == 0),
                      f'invoice_group_remainder_rule:{row}', remainder)
         checks.check(any(tuple(original[r]['fields'][f] for f in FIELDS) == tuple(fields[f] for f in FIELDS)
                          for r in groups[group_key]), f'invoice_six_fields_preserve_source_original:{row}')
@@ -351,6 +362,9 @@ def audit(args, result, checks):
         bookf, bookv = load(paths[role])
         outputbooks[role] = (bookf, bookv)
         sheet, header, columns = locate(bookf, SOURCE, source.title)
+        checks.need(not conditional_formatting_on_cost(sheet, columns['amount'], header),
+                    f'{role}_cost_column_has_no_unverifiable_conditional_formatting',
+                    {'sheet': sheet.title, 'column': columns['amount'], 'header_row': header})
         values = bookv[sheet.title]
         checks.equal(header, sh, f'{role}_header_row')
         checks.equal(columns, sc, f'{role}_header_columns')
@@ -493,12 +507,16 @@ def audit(args, result, checks):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--legacy-six-exact', action='store_true', required=True,
+                        help='Acknowledge this validator only covers the old single-source six-field exact format')
     parser.add_argument('--metadata', required=True, help='Authoring metadata with context, paths, mappings and plan')
     parser.add_argument('--context', help='Optional request context JSON; overrides metadata.context')
     parser.add_argument('--report', help='Optional separate JSON audit report; never a workbook or input path')
     parser.add_argument('--historical', action='store_true',
                         help='Recheck an archived batch after state promotion; still verify snapshot hashes, skip live working-file/index hashes')
     args = parser.parse_args()
+    if not args.legacy_six_exact:
+        parser.error('This validator is fail-closed for the current department-compatible multi-source rules.')
     checks = Checks()
     result = {'schema_version': 1, 'audit': 'independent_actual_cell_export_audit',
               'checked_at_utc': datetime.now(timezone.utc).isoformat()}

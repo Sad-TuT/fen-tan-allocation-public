@@ -9,12 +9,41 @@
 3. 通过受控的 Codex 工作流取得冻结资料，由两个独立 agent 分别复核并提交报告。网站本身不会自动启动 agent，不能由浏览器按钮代替核验。
 4. 两份有效报告通过后，由使用者确认正式入账。每个批次提供开票单、各来源标红表和剩余表、核对记录；新批次从更新后的余额继续。
 
+## Skill 与网站账簿同步
+
+网站数据库是共享余额的唯一正式账簿。Skill 不得把本地 Excel 剩余表当作另一套可独立扣减的余额；本地 Excel 只保存网站导出的带版本只读快照和本批结果。网站会拦截原总额、当前可用金额、完整资金指纹、完整业务行集合，或六个业务字段中同一位置至少五个相同的部分重叠行，因此删除隐藏元数据、改名、拆分行、改写金额或少量文字后，只要仍命中这些信号就会被拒绝。自动判重不能证明一份同时大幅改写金额和多个业务字段的任意 Excel 是否属于独立真实来源；向已有账簿追加原始 Excel 时必须填写唯一财务来源编号、明确确认独立性，并由操作人结合财务凭证核对承接关系。网站保存确认账号、时间和编号，同一编号不能重复使用。
+
+1. 在与 `site/` 同级且不会被提交的受限位置创建同步凭据，例如 `.work/secrets/allocation-ledger-sync-token`。内容使用至少 64 位随机十六进制文本；Linux 上把权限设为 `600`。
+2. 在网站进程使用的 `ALLOCATION_SYNC_TOKEN_FILE` 中指向服务端读取的同一凭据文件。不要把令牌写入仓库、命令参数、日志或聊天。
+3. 本地配置文件使用以下字段，路径必须为绝对路径：
+
+   ```json
+   {
+     "schema_version": 1,
+     "base_url": "https://实际网站地址",
+     "site_directory": "/绝对路径/site",
+     "sync_script": "scripts/ledger-sync.mjs",
+     "pull_command": "npm run ledger:pull -- --config /绝对路径/账目分摊网站同步配置.json",
+     "token_file": "/绝对路径/.work/secrets/allocation-ledger-sync-token",
+     "target_directory": "/绝对路径/网站账簿快照",
+     "required_before_planning": true,
+     "required_after_website_commit": true
+   }
+   ```
+
+4. 在 Skill 读取金额、正式试算或制表之前，在 `site_directory` 运行 `pull_command`。同步脚本会验证工作区版本、清单摘要、来源和税务文件哈希、金额守恒与 ZIP CRC。网站不可达、凭据失效、文件被改动、版本回退或同版本摘要变化时，正式分摊必须停止。账簿状态未变时，重复同步会安全返回并保持当前版本。
+5. 网站完成批次正式入账后，再次运行 `pull_command`，让本地快照前进到新版本。本地生成 Excel 和本地删除已用行都不会推进网站余额。
+
+本地 `target_directory` 是稳定的同步根目录。根目录的 `账簿清单.json` 是唯一活动版本指针，实际文件位于 `versions/v工作区版本-摘要前缀/`；`同步接收记录.json.snapshot_directory` 给出当前版本目录。同步先完整写入并校验不可变版本目录，再用原子文件替换发布新清单，因此中断时活动清单仍指向上一份完整版本。同一目标的同步使用排他锁，禁止两个本地进程交错发布。版本文件和目录会设置为只读；这能发现意外改动，但不能代替操作系统账户权限控制，尤其 Windows 仍应使用独立服务账户和 ACL 限制写入。旧格式快照首次校验通过后可继续同步，旧文件只作历史，不再被活动清单引用。
+
+网站账簿导入税务修正 JSON 时，每条修正只能选择一种作用范围：指定批次使用 `scope.batch_ids`；明确授权未来批次则使用 `scope.applies_to_all_future_batches:true`，并提供带时区的 `scope.effective_from_utc`。两种范围不能同时声明。网站会把批次创建时间与该起点比较，过去批次不会套入后来才生效的修正。活动快照中的 `资料/税务主体.xlsx` 和 `资料/税务修正.json` 才是网站模式的权威税务输入。
+
 ## 运行和测试
 
 - Node.js 需支持 `node:sqlite`，建议使用 22.21 或更新的受支持版本。安装依赖：`npm ci`。
-- `npm test` 运行分摊、开票和权限测试；`npm run test:ai` 运行 AI 兼容测试。`npm run build:server` 构建 Node/Next.js 服务，`npm run start:server` 以本机地址启动服务。
+- `npm test` 运行分摊、开票、权限和账簿同步测试；`npm run test:ai` 运行 AI 兼容测试。`npm run build:server` 构建 Node/Next.js 服务，`npm run start:server` 以本机地址启动服务。
 - 设置 `ALLOCATION_DATA_DIR` 为应用目录以外的绝对路径；程序会在其中建立 SQLite 数据库和对象文件。管理员账号须在服务器本机使用 `scripts/initialize-owner.mjs` 初始化；脚本从标准输入读取账号信息，不要把账号密码写入命令历史或仓库。
-- 登录限流密钥通过 `ALLOCATION_RATE_KEY_FILE` 指向的受限文件提供；独立复核通道使用 `ALLOCATION_REVIEW_TOKEN_FILE`。文件应归运行账号所有，使用足够随机的十六进制值，且不能进入 Git 仓库。生产环境可参考 `scripts/server-pm2.config.cjs`。
+- 登录限流密钥通过 `ALLOCATION_RATE_KEY_FILE` 指向的受限文件提供；独立复核通道使用 `ALLOCATION_REVIEW_TOKEN_FILE`，Skill 账簿同步使用 `ALLOCATION_SYNC_TOKEN_FILE`。文件应归运行账号所有，使用足够随机的十六进制值，且不能进入 Git 仓库。生产环境可参考 `scripts/server-pm2.config.cjs`。
 - DeepSeek 功能可选配置 `DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY_FILE`；也可在数据目录的 `secrets/deepseek-key` 放置受限密钥文件。调用 AI 时，相关描述、账簿摘要或批次数据会发送给服务提供方；AI 结果仅供参考，不能替代双重独立核验。
 - 通过 HTTPS 对外服务时，设置 `ALLOCATION_PUBLIC_ORIGIN` 为正确的 HTTPS 源，并由可信反向代理验证主机名、覆盖转发头和配置证书；Node 服务继续仅监听本机。
 - `scripts/allocation-backup.mjs` 可按环境变量指定的数据和备份目录创建备份，并检查恢复流程。备份必须与源码和凭据分开保护。

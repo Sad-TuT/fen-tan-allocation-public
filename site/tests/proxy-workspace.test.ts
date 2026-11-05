@@ -5,7 +5,7 @@ import {registerHooks} from 'node:module';
 (globalThis as any).__workspaceTestUser=null;
 registerHooks({resolve(specifier:string,context:any,next:any){
  if(context.parentURL?.endsWith('/api/workspace/route.ts')&&specifier==='../../lib/app-auth')return {url:'data:text/javascript,export async function getAppUser(){return globalThis.__workspaceTestUser}',shortCircuit:true};
- if(context.parentURL?.endsWith('/api/workspace/route.ts')&&specifier==='../../lib/workflow')return {url:'data:text/javascript,export async function stateSummary(){return {version:0}};export async function importSource(){return {ok:true}};export async function importTax(){return {ok:true}};export async function simulate(){return {ok:true}};export async function prepareBatch(){return {ok:true}};export async function finalize(){return {ok:true}};export async function getBatch(){return null};export async function getReviews(){return []}',shortCircuit:true};
+ if(context.parentURL?.endsWith('/api/workspace/route.ts')&&specifier==='../../lib/workflow')return {url:'data:text/javascript,export async function stateSummary(){return {version:0}};export async function importSource(){return {ok:true}};export async function importTax(){return {ok:true}};export async function importTaxOverrides(){return {ok:true}};export async function simulate(){return {ok:true}};export async function prepareBatch(){return {ok:true}};export async function finalize(){return {ok:true}};export async function getBatch(){return null};export async function getReviews(){return []}',shortCircuit:true};
  if(context.parentURL?.includes('/app/')&&specifier.startsWith('.')&&!/\.[cm]?[jt]sx?$/.test(specifier))return next(new URL(specifier+'.ts',context.parentURL).href,context);
  return next(specifier,context);
 }});

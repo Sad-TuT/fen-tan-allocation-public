@@ -64,7 +64,7 @@ async function template(): Promise<Uint8Array> {
 }
 async function generate(sourcePairs: any[], priceCents: number, quantity: number, taxes: any[] = [], templateOverride?: Uint8Array) {
   const sources = sourcePairs.map(x => x.source); const plan = planAllocation(sources, priceCents, quantity);
-  const result = await io.generateBatchFiles({ batchId: 'test-current-batch', product: '香蕉牛', priceCents, quantity, sources, plan, taxes,
+  const result = await io.generateBatchFiles({ batchId: 'test-current-batch', batchCreatedAt: '2026-11-05T00:00:00.000Z', product: '香蕉牛', priceCents, quantity, sources, plan, taxes,
     sourceBuffers: Object.fromEntries(sourcePairs.map(x => [x.source.id, x.bytes])), template: templateOverride ?? await template(), productHistory: [{ batchId: 'old-batch', product: '旧产品' }] });
   return { ...result, sources, plan };
 }
@@ -121,6 +121,120 @@ test('remaining file keeps original record identity after partial split and re-i
   assert.equal(imported.history.at(-1).batchId, 'test-current-batch'); assert.equal(imported.history.at(-1).usedCents, 8850);
 });
 
+test('stripping remaining-table metadata cannot hide an equivalent balance from duplicate detection', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(10.5)]);
+  const second = await sourceFile('第二来源.xlsx', 2, [row(389.5)]);
+  const output = await generate([first, second], 3300, 3);
+  const remaining = output.files.find((x: any) => x.role === `${second.source.id}_remaining`)!;
+  const wb = await open(remaining.bytes);
+  const metadata = wb.getWorksheet('_分摊元数据'); assert.ok(metadata); wb.removeWorksheet(metadata!.id);
+  const sheet = wb.getWorksheet('金额来源')!;
+  sheet.getCell('H4').value = `${String(value(sheet.getCell('H4')))} `;
+  sheet.getCell('J1').value = `${String(value(sheet.getCell('J1')))} `;
+  const stripped = await io.parseSource(await workbookBytes(wb), '重新命名.xlsx', 9);
+  assert.notEqual(stripped.id, second.source.id);
+  assert.notEqual(stripped.sha256, second.source.sha256);
+  await assert.rejects(io.assertDistinctSourceBalance(stripped, output.nextSources), /自动检查不能用新编号.*证明/);
+});
+
+test('a resaved original balance cannot return after later batches changed the current ledger', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(10.5)]);
+  const second = await sourceFile('第二来源.xlsx', 2, [row(389.5)]);
+  const output = await generate([first, second], 3300, 3);
+  const wb = await open(second.bytes); wb.getWorksheet('金额来源')!.getCell('H2').value = 'changed-only-in-format-review';
+  const resaved = await io.parseSource(await workbookBytes(wb), '原表另存.xlsx', 9);
+  assert.notEqual(resaved.sha256, second.source.sha256);
+  await assert.rejects(io.assertDistinctSourceBalance(resaved, output.nextSources), /自动检查不能用新编号.*证明/);
+});
+
+test('editing row text or splitting rows cannot disguise the same monetary balance', async () => {
+  const original = await sourceFile('第一来源.xlsx', 1, [row(500)]);
+  const relabelled = await open(original.bytes);
+  const ws = relabelled.getWorksheet('金额来源')!;
+  ws.getCell('H4').value = `${String(value(ws.getCell('H4')))} `;
+  const relabelledSource = await io.parseSource(await workbookBytes(relabelled), '仅改用途空格.xlsx', 2);
+  await assert.rejects(io.assertDistinctSourceBalance(relabelledSource, [original.source]), /自动检查不能用新编号.*证明/);
+
+  const split = await open(original.bytes);
+  const splitSheet = split.getWorksheet('金额来源')!;
+  splitSheet.getCell('E4').value = 200;
+  splitSheet.getRow(5).values = [String(value(splitSheet.getCell('A4'))), String(value(splitSheet.getCell('B4'))), String(value(splitSheet.getCell('C4'))), String(value(splitSheet.getCell('D4'))), 300, String(value(splitSheet.getCell('F4'))), String(value(splitSheet.getCell('G4'))), String(value(splitSheet.getCell('H4')))];
+  splitSheet.getCell('E2').value = { formula: 'SUM(E4:E5)', result: 500 };
+  const splitSource = await io.parseSource(await workbookBytes(split), '拆成两行.xlsx', 2);
+  await assert.rejects(io.assertDistinctSourceBalance(splitSource, [original.source]), /自动检查不能用新编号.*证明/);
+});
+
+test('a repeated monetary balance is rejected even with a new audited source reference', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(500)]);
+  const independent = await sourceFile('另一笔同额来源.xlsx', 2, [row(500, { costCenter: '另一成本中心' })]);
+  independent.source.sourceReference = 'FIN-2026-0002';
+  independent.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-1', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'FIN-2026-0002' };
+  await assert.rejects(io.assertDistinctSourceBalance(independent.source, [first.source]), /自动检查不能用新编号.*证明/);
+});
+
+test('a source reference is globally unique even when the monetary balance differs', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(500)]);
+  first.source.sourceReference = 'FIN-SAME';
+  const different = await sourceFile('不同金额来源.xlsx', 2, [row(600)]);
+  different.source.sourceReference = 'fin-same';
+  different.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-1', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'fin-same' };
+  await assert.rejects(io.assertDistinctSourceBalance(different.source, [first.source]), /已经使用/);
+});
+
+test('distinct unused sources at different initial totals can be imported together', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(500)]);
+  first.source.sourceReference = 'OPENING-1';
+  const second = await sourceFile('第二来源.xlsx', 2, [row(900, { applicant: '另一申领人', purpose: '另一申领用途' })]);
+  second.source.sourceReference = 'OPENING-2';
+  second.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-1', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'OPENING-2' };
+  await io.assertDistinctSourceBalance(second.source, [first.source]);
+});
+
+test('changing both opening and history totals cannot disguise the same available balance', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(400)], 10000);
+  first.source.sourceReference = 'OPENING-1';
+  const altered = await sourceFile('改写原额和历史.xlsx', 2, [row(400)], 20000);
+  altered.source.sourceReference = 'OPENING-2';
+  altered.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-2', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'OPENING-2' };
+  await assert.rejects(io.assertDistinctSourceBalance(altered.source, [first.source]), /自动检查不能用新编号.*证明/);
+});
+
+test('changing every monetary total cannot disguise a copied set of source rows', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(400)], 10000);
+  first.source.sourceReference = 'OPENING-1';
+  const altered = await sourceFile('同时改写三类金额.xlsx', 2, [row(399)], 20000);
+  altered.source.sourceReference = 'OPENING-2';
+  altered.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-2', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'OPENING-2' };
+  await assert.rejects(io.assertDistinctSourceBalance(altered.source, [first.source]), /自动检查不能用新编号.*证明/);
+});
+
+test('splitting a copied row and changing every monetary total is still rejected', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(400)], 10000);
+  first.source.sourceReference = 'OPENING-1';
+  const altered = await sourceFile('拆行并改写全部金额.xlsx', 2, [row(200), row(199)], 20000);
+  altered.source.sourceReference = 'OPENING-2';
+  altered.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-2', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'OPENING-2' };
+  await assert.rejects(io.assertDistinctSourceBalance(altered.source, [first.source]), /自动检查不能用新编号.*证明/);
+});
+
+test('changing one business field with all monetary totals is rejected as partial overlap', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(400)], 10000);
+  first.source.sourceReference = 'OPENING-1';
+  const altered = await sourceFile('仅改用途和金额.xlsx', 2, [row(399, { purpose: '用途1' })], 20000);
+  altered.source.sourceReference = 'OPENING-2';
+  altered.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-2', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'OPENING-2' };
+  await assert.rejects(io.assertDistinctSourceBalance(altered.source, [first.source]), /自动检查不能用新编号.*证明/);
+});
+
+test('different omitted field positions do not create a false five-field overlap', async () => {
+  const first = await sourceFile('第一来源.xlsx', 1, [row(100, { applicant: '甲', department: '同', useCenter: '同', costCenter: '成本一', purpose: '用途' })]);
+  first.source.sourceReference = 'OPENING-1';
+  const second = await sourceFile('第二来源.xlsx', 2, [row(200, { applicant: '甲', department: '部门二', useCenter: '同', costCenter: '同', purpose: '用途' })]);
+  second.source.sourceReference = 'OPENING-2';
+  second.source.importAttestation = { mode: 'attested-independent', confirmedBy: 'operator-2', confirmedAt: '2026-11-05T00:00:00.000Z', reference: 'OPENING-2' };
+  await io.assertDistinctSourceBalance(second.source, [first.source]);
+});
+
 test('fully exhausted remaining file can be re-imported as a zero balance without losing historical ledger', async () => {
   const first = await sourceFile('第一来源.xlsx', 1, [row(10.5)], 725);
   const second = await sourceFile('第二来源.xlsx', 2, [row(389.5)]);
@@ -165,6 +279,71 @@ test('tax branches, text identifiers, pending red fill and legal-entity blocks s
   assert.equal((ws.getCell('G9').fill as ExcelJS.FillPattern).fgColor?.argb, 'FFFF0000');
   assert.equal(output.taxPending, 1); assert.equal(value(ws.getCell('K2')), 198); assert.equal(value(ws.getCell('J2')), 6);
   assert.equal(Array.from({ length: 6 }, (_, i) => exactCents(value(ws.getCell(i + 4, 5)))).reduce((a, b) => a + b, 0), 19800);
+});
+
+test('conditional formatting on the cost column fails closed instead of treating runtime-used money as available', async () => {
+  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('金额来源');
+  ws.getRow(3).values=sourceHeaders;ws.getRow(4).values=row(33) as ExcelJS.CellValue[];
+  ws.getCell('D2').value=33;ws.getCell('E2').value={formula:'SUM(E4:E4)',result:33};
+  ws.addConditionalFormatting({ref:'E4:E4',rules:[{type:'expression',priority:1,formulae:['$F4="已用"'],style:{font:{color:{argb:'FFFF0000'}}}}]});
+  await assert.rejects(io.parseSource(await workbookBytes(wb),'条件红字.xlsx',1),/成本列E含有条件格式/);
+});
+
+test('a non-red conditional format on the cost column also fails closed', async () => {
+  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('金额来源');
+  ws.getRow(3).values=sourceHeaders;ws.getRow(4).values=row(33) as ExcelJS.CellValue[];
+  ws.getCell('D2').value=33;ws.getCell('E2').value={formula:'SUM(E4:E4)',result:33};
+  ws.addConditionalFormatting({ref:'E4:E4',rules:[{type:'expression',priority:1,formulae:['$F4="已用"'],style:{font:{color:{argb:'FF0000FF'}}}}]});
+  await assert.rejects(io.parseSource(await workbookBytes(wb),'条件蓝字.xlsx',1),/成本列E含有条件格式/);
+});
+
+test('conditional formatting with multiple whitespace-separated ranges fails closed', async () => {
+  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('金额来源');
+  ws.getRow(3).values=sourceHeaders;ws.getRow(4).values=row(500) as ExcelJS.CellValue[];
+  ws.getCell('D2').value=500;ws.getCell('E2').value={formula:'SUM(E4:E4)',result:500};
+  ws.addConditionalFormatting({ref:'E4:E5 E10:E20',rules:[{type:'expression',priority:1,formulae:['$F4="已用"'],style:{font:{color:{argb:'FFFF0000'}}}}]});
+  await assert.rejects(io.parseSource(await workbookBytes(wb),'多范围条件红字.xlsx',1),/成本列E含有条件格式/);
+});
+
+test('tax decisions require a unique code and honor only explicitly scoped overrides',()=>{
+  const taxes=[{code:'L100001',name:'示例公司',kind:'一般纳税人-一般征收',credit:'001',address:'地址 行',bank:'银行支',account:'0001',sourceRow:2,issues:[]}];
+  assert.equal(io.taxDecision('示例公司',taxes).mode,'pending');
+  assert.equal(io.taxDecision('示例公司(L100001)(L100002)',taxes).mode,'pending');
+  const override=io.parseTaxOverrides(new TextEncoder().encode(JSON.stringify({entities:{L100001:{
+    confirmed_by_user:true,reason:'本批确认',address:'地址',bank:'银行支行',scope:{batch_ids:['batch-a']},
+  }}})));
+  return override.then((parsed:any[])=>{
+    assert.match(io.taxDecision('示例公司(L100001)',taxes,parsed,'batch-a').text,/地址\n银行支行/);
+    assert.equal(io.taxDecision('示例公司(L100001)',taxes,parsed,'batch-b').mode,'pending');
+    return io.parseTaxOverrides(new TextEncoder().encode(JSON.stringify({entities:{L100001:{
+      confirmed_by_user:true,reason:'未来授权',address:'地址',bank:'银行支行',
+      scope:{applies_to_all_future_batches:true,effective_from_utc:'2026-11-05T00:00:00Z'},
+    }}}))).then((future:any[])=>{
+      assert.match(io.taxDecision('示例公司(L100001)',taxes,future,'batch-c','2026-11-05T08:00:00+08:00').text,/银行支行/);
+      assert.equal(io.taxDecision('示例公司(L100001)',taxes,future,'batch-old','2026-11-04T23:59:59+08:00').mode,'pending');
+    });
+  });
+});
+
+test('future tax authorization requires an explicit effective timestamp',async()=>{
+  await assert.rejects(io.parseTaxOverrides(new TextEncoder().encode(JSON.stringify({entities:{L100001:{
+    confirmed_by_user:true,reason:'未来授权',address:'地址',
+    scope:{applies_to_all_future_batches:true},
+  }}}))),/effective_from_utc/);
+});
+
+test('tax authorization cannot mix explicit batches with future batches',async()=>{
+  await assert.rejects(io.parseTaxOverrides(new TextEncoder().encode(JSON.stringify({entities:{L100001:{
+    confirmed_by_user:true,reason:'范围冲突',address:'地址',
+    scope:{batch_ids:['batch-a'],applies_to_all_future_batches:true,effective_from_utc:'2026-11-05T00:00:00Z'},
+  }}}))),/不能同时声明 batch_ids 和未来批次授权/);
+});
+
+test('nested and top-level tax scopes cannot hide one another',async()=>{
+  await assert.rejects(io.parseTaxOverrides(new TextEncoder().encode(JSON.stringify({entities:{L100001:{
+    confirmed_by_user:true,reason:'嵌套冲突',address:'地址',batch_ids:[],
+    scope:{batch_ids:['batch-a'],applies_to_all_future_batches:true,effective_from_utc:'2026-11-05T00:00:00Z'},
+  }}}))),/batch_ids 重复声明/);
 });
 
 test('identical rows are preserved as distinct source records and red rows after full use', async () => {

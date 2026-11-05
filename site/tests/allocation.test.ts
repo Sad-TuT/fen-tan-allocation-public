@@ -22,6 +22,10 @@ test("legal entity changes only the name/code ordering and paired code wrapper",
   assert.notEqual(normalizeLegalEntity("示例（北京）有限公司（L100002）").key, a.key);
   assert.equal(a.name, "示例（北京）有限公司");
   assert.equal(a.code, "L100001");
+  assert.equal(normalizeLegalEntity("示例公司（分部）(L100001)").name, "示例公司（分部）");
+  assert.equal(normalizeLegalEntity("示例公司（分部(L100001)").recognized, false);
+  assert.equal(normalizeLegalEntity("ABC2科技有限公司").recognized, false);
+  assert.equal(normalizeLegalEntity("ABC123 示例公司").recognized, false);
 });
 
 test("blank department matches a unique nonblank value; other fields stay exact", () => {
@@ -30,6 +34,23 @@ test("blank department matches a unique nonblank value; other fields stay exact"
   assert.equal(result.groups.length, 2);
   assert.equal(result.groups.find(g=>g.purpose==='员工礼品')?.department,'部门');
   assert.equal(validateAllocationPlan(sources, 3300, 3, result).valid, true);
+});
+
+test("confirmed department assignment persists by source row and is revalidated", () => {
+  const persisted = row(10000, {
+    department: "",
+    departmentResolution: {department:"部门甲",useCenter:""},
+  });
+  const sources = [source("s1", 1, [row(10000, {department:"部门甲"}), persisted, row(10000, {department:"部门乙"})])];
+  const plan = planAllocation(sources, 10000, 3);
+  assert.ok(plan.departmentAssignments.some(a=>a.rowId===persisted.id&&a.department==="部门甲"));
+  assert.equal(validateAllocationPlan(sources, 10000, 3, plan).valid, true);
+  const changed = structuredClone(sources);
+  changed[0].rows.find(r=>r.id===persisted.id)!.departmentResolution={department:"不存在",useCenter:""};
+  assert.throws(()=>planAllocation(changed,10000,3),/合法候选/);
+  const overwrite=structuredClone(sources);
+  overwrite[0].rows.find(r=>r.department==="部门甲")!.departmentResolution={department:"部门乙",useCenter:""};
+  assert.throws(()=>planAllocation(overwrite,10000,3),/不能覆盖已有非空原值/);
 });
 
 
@@ -63,9 +84,9 @@ test("cross-source group uses FIFO and allows non-price-multiple source contribu
   assert.equal(validateAllocationPlan(sources, 3300, 3, result).valid, true);
 });
 
-test("remainder is strictly above 300 yuan and no cents are rounded away", () => {
-  unsat(() => planAllocation([source("s1", 1, [row(39900)])], 3300, 3));
-  assert.equal(planAllocation([source("s1", 1, [row(40000)])], 3300, 3).groups[0].remainderCents, 30100);
+test("remainder is at least 300 yuan and no cents are rounded away", () => {
+  unsat(() => planAllocation([source("s1", 1, [row(39899)])], 3300, 3));
+  assert.equal(planAllocation([source("s1", 1, [row(39900)])], 3300, 3).groups[0].remainderCents, 30000);
   unsat(() => planAllocation([source("s1", 1, [row(40050)])], 3300, 3));
   assert.equal(planAllocation([source("s1", 1, [row(20025), row(19975)])], 3300, 3).groups.length, 1);
 });
@@ -131,6 +152,16 @@ test("resource limits report unverified scale rather than financial impossibilit
   assert.throws(() => planAllocation([source("s1", 1, [row(6600)])], 3300, 2, { maxDpCells: 1 }), (e: unknown) => e instanceof AllocationError && e.code === "LIMIT_EXCEEDED");
 });
 
+test("current plans use the hardened rule version and old pending plans fail validation", () => {
+  const sources = [source("s1", 1, [row(40000)])];
+  const plan = planAllocation(sources, 3300, 3);
+  assert.equal(plan.ruleVersion, "department-compat-v3");
+  assert.equal(validateAllocationPlan(sources, 3300, 3, plan).valid, true);
+  const old = structuredClone(plan) as any;
+  old.ruleVersion = "department-compat-v2";
+  assert.equal(validateAllocationPlan(sources, 3300, 3, old).valid, false);
+});
+
 test("independent replay rejects modified amounts, FIFO and source ledgers", () => {
   const sources = [source("s1", 1, [row(1050)]), source("s2", 2, [row(38950)])];
   const result = planAllocation(sources, 3300, 3);
@@ -162,7 +193,7 @@ function brute(groups: { amount: number; first: number }[], price: number, targe
     for (let q = 0; q <= target - units; q++) {
       const used = price * q;
       const remainder = group.amount - used;
-      if (q && (used > group.amount || !(remainder === 0 || (remainder > 30000 && remainder % 100 === 0)))) continue;
+      if (q && (used > group.amount || !(remainder === 0 || (remainder >= 30000 && remainder % 100 === 0)))) continue;
       visit(index + 1, units + q, first + Math.min(used, group.first), count + Number(q > 0));
     }
   };

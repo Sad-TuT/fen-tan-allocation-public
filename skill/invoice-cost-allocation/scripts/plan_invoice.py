@@ -2,6 +2,7 @@
 """Read Excel inputs and produce an exact, auditable invoice allocation plan."""
 import argparse
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -50,14 +51,45 @@ def yuan(value):
 def legal_parts(value):
     if not isinstance(value, str):
         raise PlanningError('Missing legal entity')
-    codes = re.findall(r'(?<![A-Za-z0-9])L\d+(?![A-Za-z0-9])', value)
+    codes = re.findall(r'(?<![A-Za-z0-9])L\d{6}(?![A-Za-z0-9])', value)
     if len(codes) != 1:
         raise PlanningError(f'Expected exactly one legal entity code: {value!r}')
     code = codes[0]
-    name = value.replace(code, '', 1).strip('()（） \r\n\t')
-    if not name:
-        raise PlanningError(f'Missing legal entity company name: {value!r}')
-    return name, code
+    left, right = value.split(code, 1)
+    left, right = left.strip(), right.strip()
+    pairs = (('(', ')'), ('（', '）'), ('[', ']'), ('【', '】'))
+
+    def balanced(name):
+        expected = []
+        opening = {left: right for left, right in pairs}
+        closing = {right: left for left, right in pairs}
+        for char in name:
+            if char in opening:
+                expected.append(opening[char])
+            elif char in closing:
+                if not expected or expected.pop() != char:
+                    return False
+        return bool(name) and not expected
+
+    names = []
+    for opening, closing in pairs:
+        if left.endswith(opening) and right.startswith(closing):
+            name = left[:-len(opening)].strip() + right[len(closing):].strip()
+            if balanced(name):
+                names.append(name)
+        if not left and right.startswith(opening) and right.endswith(closing):
+            name = right[len(opening):-len(closing)].strip()
+            if balanced(name):
+                names.append(name)
+    if not names:
+        if not left and right and balanced(right):
+            names.append(right)
+        elif left and not right and balanced(left):
+            names.append(left)
+    names = list(dict.fromkeys(names))
+    if len(names) != 1:
+        raise PlanningError(f'Legal entity name/code layout is unbalanced or has text on both sides: {value!r}')
+    return names[0], code
 
 
 def red(cell):
@@ -100,7 +132,7 @@ def legal_options(amount, price, limit):
     """Partial quantities form one arithmetic progression; full use is separate."""
     step = 100 // gcd(price, 100)
     first = next((q for q in range(1, step + 1) if (amount - q * price) % 100 == 0), None)
-    maximum = min(limit, (amount - 30100) // price)
+    maximum = min(limit, (amount - 30000) // price)
     partial = (first, first + ((maximum - first) // step) * step, step) if first is not None and maximum >= first else None
     full = amount // price if amount > 0 and amount % price == 0 and amount // price <= limit else None
     return partial, full
@@ -163,7 +195,7 @@ def allocate(groups, price, quantity):
         group = candidates[index][1]
         used = count * price
         remainder = group['amount_cents'] - used
-        if not (remainder == 0 or (remainder > 30000 and remainder % 100 == 0)):
+        if not (remainder == 0 or (remainder >= 30000 and remainder % 100 == 0)):
             raise PlanningError('Internal remainder invariant failed')
         selected.append({**group, 'quantity': count, 'used_cents': used, 'remainder_cents': remainder})
     selected.sort(key=lambda group: group['source_rows'][0])
@@ -184,7 +216,75 @@ def load_tax(filename, sheet_name=None):
     return entries
 
 
-def invoice_text(legal, entries, overrides=None):
+def load_tax_overrides(filename):
+    try:
+        parsed = json.loads(Path(filename).read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PlanningError(f'cannot read tax override JSON: {exc}') from exc
+    entities = parsed.get('entities') if isinstance(parsed, dict) else None
+    if not isinstance(entities, dict) or not entities:
+        raise PlanningError('tax override JSON must contain a non-empty entities object')
+    allowed = {'name', 'kind', 'credit', 'address', 'bank', 'account'}
+    for code, item in entities.items():
+        if not re.fullmatch(r'[A-Za-z]\d{6}', code):
+            raise PlanningError(f'{code}: invalid legal entity code in tax override')
+        if not isinstance(item, dict):
+            raise PlanningError(f'{code}: tax override must be an object')
+        if item.get('confirmed_by_user') is not True or not isinstance(item.get('reason'), str) or not item['reason'].strip():
+            raise PlanningError(f'{code}: tax override requires user confirmation and reason')
+        scope = item.get('scope') if isinstance(item.get('scope'), dict) else {}
+        for key in ('applies_to_all_future_batches', 'batch_ids', 'effective_from_utc'):
+            if key in item and key in scope:
+                raise PlanningError(f'{code}: tax override {key} is declared both at top level and in scope')
+        future = item.get('applies_to_all_future_batches') is True or scope.get('applies_to_all_future_batches') is True
+        raw_batch_ids = item['batch_ids'] if 'batch_ids' in item else scope.get('batch_ids')
+        if raw_batch_ids is not None and (
+                not isinstance(raw_batch_ids, list)
+                or any(not isinstance(value, str) or not value.strip() for value in raw_batch_ids)):
+            raise PlanningError(f'{code}: batch_ids must be a list of non-empty strings')
+        batch_ids = [value.strip() for value in raw_batch_ids] if isinstance(raw_batch_ids, list) else []
+        if len(batch_ids) != len(set(batch_ids)):
+            raise PlanningError(f'{code}: batch_ids must not contain duplicates')
+        if future and batch_ids:
+            raise PlanningError(f'{code}: tax override cannot combine batch_ids with a future-batch authorization')
+        if not future and not batch_ids:
+            raise PlanningError(f'{code}: tax override must name applicable batch_ids or authorize all future batches')
+        if future:
+            raw_effective = item['effective_from_utc'] if 'effective_from_utc' in item else scope.get('effective_from_utc')
+            try:
+                effective = datetime.fromisoformat(str(raw_effective).replace('Z', '+00:00'))
+                if effective.tzinfo is None:
+                    raise ValueError('timezone required')
+            except (TypeError, ValueError) as exc:
+                raise PlanningError(f'{code}: future-batch override needs a timezone-aware effective_from_utc') from exc
+        corrections = [key for key in allowed if item.get(key) is not None]
+        if not corrections:
+            raise PlanningError(f'{code}: tax override has no correction fields')
+        for key in corrections:
+            if not isinstance(item[key], str) or not item[key].strip():
+                raise PlanningError(f'{code}: tax override field {key} must be non-empty text')
+    return entities
+
+
+def override_applies(override, batch_id, batch_created_at=None):
+    scope = override.get('scope') if isinstance(override.get('scope'), dict) else {}
+    if override.get('applies_to_all_future_batches') is True or scope.get('applies_to_all_future_batches') is True:
+        raw_effective = override.get('effective_from_utc', scope.get('effective_from_utc'))
+        if not batch_created_at:
+            return False
+        try:
+            effective = datetime.fromisoformat(str(raw_effective).replace('Z', '+00:00'))
+            created = datetime.fromisoformat(str(batch_created_at).replace('Z', '+00:00'))
+            if effective.tzinfo is None or created.tzinfo is None:
+                return False
+            return created.astimezone(timezone.utc) >= effective.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return False
+    batch_ids = override.get('batch_ids', scope.get('batch_ids'))
+    return isinstance(batch_ids, list) and batch_id in batch_ids
+
+
+def invoice_text(legal, entries, overrides=None, batch_id=None, batch_created_at=None):
     name, code = legal_parts(legal)
     matches = entries.get(code, [])
     if len(matches) != 1:
@@ -194,6 +294,8 @@ def invoice_text(legal, entries, overrides=None):
     if override:
         if not override.get('confirmed_by_user') or not override.get('reason'):
             raise PlanningError(f'{code}: tax overrides require user confirmation and reason')
+        if not override_applies(override, batch_id, batch_created_at):
+            raise PlanningError(f'{code}: tax override is not authorized for batch {batch_id!r}')
         for key, value in override.items():
             if key in TAX and key != 'code':
                 entry[key] = value
@@ -274,7 +376,7 @@ def make_plan(args):
         groups[key]['source_rows'].append(row)
         groups[key]['amount_cents'] += amount
     tax_entries = load_tax(args.tax, args.tax_sheet) if args.tax else None
-    overrides = json.loads(Path(args.tax_overrides).read_text(encoding='utf-8')) if args.tax_overrides else {}
+    overrides = load_tax_overrides(args.tax_overrides) if args.tax_overrides else {}
     tax_exclusions = []
     candidates = list(groups.values())
     if args.require_tax_complete:
@@ -286,7 +388,7 @@ def make_plan(args):
             if not partial and not full:
                 continue
             try:
-                invoice_text(group['fields']['legal'], tax_entries, overrides)
+                invoice_text(group['fields']['legal'], tax_entries, overrides, args.batch_id, args.batch_created_at)
                 verified.append(group)
             except PlanningError as exc:
                 name, code = legal_parts(group['fields']['legal'])
@@ -305,7 +407,7 @@ def make_plan(args):
         tax_record = None
         if tax_entries is not None:
             try:
-                text, tax_record = invoice_text(group['fields']['legal'], tax_entries, overrides)
+                text, tax_record = invoice_text(group['fields']['legal'], tax_entries, overrides, args.batch_id, args.batch_created_at)
             except PlanningError as exc:
                 tax_issues.append(str(exc))
         else:
@@ -351,13 +453,31 @@ def make_plan(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--legacy-six-exact', action='store_true', required=True,
+                        help='Acknowledge this helper only supports the old single-source six-field exact rule')
     for name in ('source', 'template', 'price', 'total', 'product', 'out'):
         parser.add_argument('--' + name, required=True)
     for name in ('tax', 'source-sheet', 'template-sheet', 'tax-sheet', 'tax-overrides'):
         parser.add_argument('--' + name)
+    parser.add_argument('--batch-id', help='Required with --tax-overrides; exact batch scope to apply')
+    parser.add_argument('--batch-created-at',
+                        help='Required with --tax-overrides; timezone-aware ISO timestamp used for future-scope overrides')
     parser.add_argument('--require-tax-complete', action='store_true',
                         help='For a new allocation, use only price-feasible groups with complete verified tax data')
     args = parser.parse_args()
+    if not args.legacy_six_exact:
+        parser.error('This helper is fail-closed for the current department-compatible multi-source rules.')
+    if args.tax_overrides and not args.batch_id:
+        parser.error('--batch-id is required with --tax-overrides so corrections cannot leak across batches')
+    if args.tax_overrides and not args.batch_created_at:
+        parser.error('--batch-created-at is required with --tax-overrides so future scopes have a verifiable start')
+    if args.batch_created_at:
+        try:
+            created_at = datetime.fromisoformat(args.batch_created_at.replace('Z', '+00:00'))
+            if created_at.tzinfo is None:
+                raise ValueError('timezone required')
+        except ValueError:
+            parser.error('--batch-created-at must be a timezone-aware ISO timestamp')
     output = Path(args.out)
     inputs = [args.source, args.template, args.tax, args.tax_overrides]
     if output.suffix.lower() != '.json' or output.resolve() in {Path(p).resolve() for p in inputs if p}:

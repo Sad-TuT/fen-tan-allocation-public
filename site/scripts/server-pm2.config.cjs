@@ -8,6 +8,7 @@ const port = process.env.ALLOCATION_PORT;
 const dataDir = process.env.ALLOCATION_DATA_DIR;
 const rateKeyFile = process.env.ALLOCATION_RATE_KEY_FILE;
 const reviewTokenFile = process.env.ALLOCATION_REVIEW_TOKEN_FILE;
+const syncTokenFile = process.env.ALLOCATION_SYNC_TOKEN_FILE;
 const publicOrigin = process.env.ALLOCATION_PUBLIC_ORIGIN;
 if (!/^\d+$/.test(port || '') || Number(port) < 1024 || Number(port) > 65535) {
   throw new Error('Set ALLOCATION_PORT to an unused port in the range 1024–65535.');
@@ -17,6 +18,9 @@ if (!dataDir || !path.isAbsolute(dataDir)) {
 }
 if (!rateKeyFile || !path.isAbsolute(rateKeyFile) || !reviewTokenFile || !path.isAbsolute(reviewTokenFile)) {
   throw new Error('Set absolute paths for the rate key and review token files.');
+}
+if (!syncTokenFile || !path.isAbsolute(syncTokenFile)) {
+  throw new Error('Set an absolute path for the ledger sync token file.');
 }
 const root = path.resolve(__dirname, '..');
 module.exports = {
@@ -30,6 +34,6 @@ module.exports = {
     autorestart: true,
     watch: false,
     kill_timeout: 10000,
-    env: { NODE_ENV: 'production', ALLOCATION_DATA_DIR: dataDir, ALLOCATION_RATE_KEY_FILE:rateKeyFile, ALLOCATION_REVIEW_TOKEN_FILE:reviewTokenFile, ...(publicOrigin ? { ALLOCATION_PUBLIC_ORIGIN:publicOrigin } : {}) },
+    env: { NODE_ENV: 'production', ALLOCATION_DATA_DIR: dataDir, ALLOCATION_RATE_KEY_FILE:rateKeyFile, ALLOCATION_REVIEW_TOKEN_FILE:reviewTokenFile, ALLOCATION_SYNC_TOKEN_FILE:syncTokenFile, ...(publicOrigin ? { ALLOCATION_PUBLIC_ORIGIN:publicOrigin } : {}) },
   }],
 };

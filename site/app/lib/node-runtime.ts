@@ -108,18 +108,20 @@ const localBucket={
    finally{await unlink(temporary);}
  }
 };
+function readHexSecret(environmentName:string):string|undefined{
+  const file=process.env[environmentName];
+  if(!file||!path.isAbsolute(file))return undefined;
+  try{
+    const info=lstatSync(file);
+    if(!info.isFile()||info.isSymbolicLink()||info.size>1024)return undefined;
+    if(process.platform!=='win32'&&((info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())))return undefined;
+    const key=readFileSync(file,'utf8').trim();
+    return /^[a-f0-9]{64,}$/i.test(key)?key:undefined;
+  }catch{return undefined;}
+}
 export const env={
  DB:localDB as unknown as D1Database,
  BUCKET:localBucket as unknown as R2Bucket,
- get ALLOCATION_RATE_KEY(){
-  const file=process.env.ALLOCATION_RATE_KEY_FILE;
-  if(!file||!path.isAbsolute(file))return undefined;
-  try{
-   const info=lstatSync(file);
-   if(!info.isFile()||info.isSymbolicLink()||info.size>1024)return undefined;
-   if(process.platform!=='win32'&&((info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())))return undefined;
-   const key=readFileSync(file,'utf8').trim();
-   return /^[a-f0-9]{64,}$/i.test(key)?key:undefined;
-  }catch{return undefined;}
- },
+ get ALLOCATION_RATE_KEY(){return readHexSecret('ALLOCATION_RATE_KEY_FILE');},
+ get ALLOCATION_SYNC_TOKEN(){return readHexSecret('ALLOCATION_SYNC_TOKEN_FILE');},
 };
