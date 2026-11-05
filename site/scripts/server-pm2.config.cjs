@@ -12,6 +12,7 @@ const reviewerBTokenFile = process.env.ALLOCATION_REVIEWER_B_TOKEN_FILE;
 const commitTokenFile = process.env.ALLOCATION_COMMIT_TOKEN_FILE;
 const syncTokenFile = process.env.ALLOCATION_SYNC_TOKEN_FILE;
 const publicOrigin = process.env.ALLOCATION_PUBLIC_ORIGIN;
+const edgeSecurityHeaders = process.env.ALLOCATION_EDGE_SECURITY_HEADERS;
 if (!/^\d+$/.test(port || '') || Number(port) < 1024 || Number(port) > 65535) {
   throw new Error('Set ALLOCATION_PORT to an unused port in the range 1024–65535.');
 }
@@ -27,6 +28,9 @@ if (!rateKeyFile || !path.isAbsolute(rateKeyFile)
 if (!syncTokenFile || !path.isAbsolute(syncTokenFile)) {
   throw new Error('Set an absolute path for the ledger sync token file.');
 }
+if (edgeSecurityHeaders && edgeSecurityHeaders !== 'true' && edgeSecurityHeaders !== 'false') {
+  throw new Error('Set ALLOCATION_EDGE_SECURITY_HEADERS to true or false.');
+}
 const root = path.resolve(__dirname, '..');
 module.exports = {
   apps: [{
@@ -39,6 +43,6 @@ module.exports = {
     autorestart: true,
     watch: false,
     kill_timeout: 10000,
-    env: { NODE_ENV: 'production', ALLOCATION_DATA_DIR: dataDir, ALLOCATION_RATE_KEY_FILE:rateKeyFile, ALLOCATION_REVIEWER_A_TOKEN_FILE:reviewerATokenFile, ALLOCATION_REVIEWER_B_TOKEN_FILE:reviewerBTokenFile, ALLOCATION_COMMIT_TOKEN_FILE:commitTokenFile, ALLOCATION_SYNC_TOKEN_FILE:syncTokenFile, ...(publicOrigin ? { ALLOCATION_PUBLIC_ORIGIN:publicOrigin } : {}) },
+    env: { NODE_ENV: 'production', ALLOCATION_DATA_DIR: dataDir, ALLOCATION_RATE_KEY_FILE:rateKeyFile, ALLOCATION_REVIEWER_A_TOKEN_FILE:reviewerATokenFile, ALLOCATION_REVIEWER_B_TOKEN_FILE:reviewerBTokenFile, ALLOCATION_COMMIT_TOKEN_FILE:commitTokenFile, ALLOCATION_SYNC_TOKEN_FILE:syncTokenFile, ...(publicOrigin ? { ALLOCATION_PUBLIC_ORIGIN:publicOrigin } : {}), ...(edgeSecurityHeaders ? { ALLOCATION_EDGE_SECURITY_HEADERS:edgeSecurityHeaders } : {}) },
   }],
 };

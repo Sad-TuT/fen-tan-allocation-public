@@ -1,4 +1,8 @@
 import type { Metadata, Viewport } from "next";
+import {
+  CONTENT_SECURITY_POLICY,
+  edgeSecurityHeadersEnabled,
+} from "./lib/security-policy.ts";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -27,6 +31,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
+      <head>
+        {edgeSecurityHeadersEnabled() ? (
+          <meta
+            httpEquiv="Content-Security-Policy"
+            content={CONTENT_SECURITY_POLICY}
+          />
+        ) : null}
+      </head>
       <body className="antialiased">{children}</body>
     </html>
   );

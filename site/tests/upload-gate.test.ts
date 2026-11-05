@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error Node's native TypeScript test runner requires the explicit .ts extension.
 import { activeUploadCountForTest, tryAcquireUploadSlot } from "../app/lib/upload-gate.ts";
 
 test("upload parsing has a bounded concurrency gate and releases once", () => {
