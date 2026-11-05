@@ -1,4 +1,5 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 // Large immutable workspace/batch payloads live in R2. D1 owns their current
 // pointers, the balance version and the transaction that posts a reviewed batch.
@@ -69,6 +70,52 @@ export const appUsers = sqliteTable("app_users", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+// Per-batch file processing has its own lifecycle and never advances the
+// shared allocation workspace above. Files remain immutable in object storage.
+export const processingJobs = sqliteTable("processing_jobs", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull().references(() => appUsers.id, { onDelete: "restrict" }),
+  parentJobId: text("parent_job_id"),
+  status: text("status").notNull(),
+  revision: integer("revision").notNull(),
+  dataKey: text("data_key").notNull(),
+  sourceFingerprint: text("source_fingerprint").notNull(),
+  product: text("product"),
+  totalCents: integer("total_cents"),
+  quantity: integer("quantity"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  adoptedAt: text("adopted_at"),
+  adoptedBy: text("adopted_by"),
+  discardedAt: text("discarded_at"),
+  discardReason: text("discard_reason"),
+}, (table) => [
+  index("processing_jobs_owner_created").on(table.ownerId, table.createdAt, table.id),
+  uniqueIndex("processing_jobs_single_active_child").on(table.parentJobId).where(sql`${table.parentJobId} IS NOT NULL AND ${table.status} <> 'discarded'`),
+]);
+
+export const processingJobEvents = sqliteTable("processing_job_events", {
+  id: text("id").primaryKey(),
+  jobId: text("job_id").notNull().references(() => processingJobs.id, { onDelete: "restrict" }),
+  actorId: text("actor_id").notNull().references(() => appUsers.id, { onDelete: "restrict" }),
+  eventType: text("event_type").notNull(),
+  revision: integer("revision").notNull(),
+  createdAt: text("created_at").notNull(),
+  detailJson: text("detail_json").notNull(),
+}, (table) => [index("processing_job_events_job_created").on(table.jobId, table.createdAt, table.id)]);
+
+export const processingActiveSources = sqliteTable("processing_active_sources", {
+  ownerId: text("owner_id").notNull().references(() => appUsers.id, { onDelete: "restrict" }),
+  sourceSha256: text("source_sha256").notNull(),
+  balanceFingerprint: text("balance_fingerprint").notNull(),
+  jobId: text("job_id").notNull().references(() => processingJobs.id, { onDelete: "restrict" }),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  primaryKey({ name: "processing_active_sources_owner_sha_pk", columns: [table.ownerId, table.sourceSha256] }),
+  uniqueIndex("processing_active_sources_owner_sha").on(table.ownerId, table.sourceSha256),
+  uniqueIndex("processing_active_sources_owner_balance").on(table.ownerId, table.balanceFingerprint),
+]);
 
 export const appSessions = sqliteTable("app_sessions", {
   tokenHash: text("token_hash").primaryKey(),

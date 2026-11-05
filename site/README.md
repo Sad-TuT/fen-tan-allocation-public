@@ -45,7 +45,8 @@
 - `npm test` 运行分摊、开票、权限和账簿同步测试；`npm run test:ai` 运行 AI 兼容测试。`npm run build:server` 构建 Node/Next.js 服务，`npm run start:server` 以本机地址启动服务。
 - 设置 `ALLOCATION_DATA_DIR` 为应用目录以外的绝对路径；程序会在其中建立 SQLite 数据库和对象文件。管理员账号须在服务器本机使用 `scripts/initialize-owner.mjs` 初始化；脚本从标准输入读取账号信息，不要把账号密码写入命令历史或仓库。
 - 登录限流密钥通过 `ALLOCATION_RATE_KEY_FILE` 指向的受限文件提供；两名复核者必须分别使用 `ALLOCATION_REVIEWER_A_TOKEN_FILE` 和 `ALLOCATION_REVIEWER_B_TOKEN_FILE`，正式入账控制使用独立的 `ALLOCATION_COMMIT_TOKEN_FILE`，Skill 账簿同步使用 `ALLOCATION_SYNC_TOKEN_FILE`。网页入账按钮会临时要求输入入账控制口令，MCP 入账也必须使用独立入账控制凭据；普通登录账号和复核凭据都不能越过该门禁。报告中的 `reviewerId` 必须分别写成 `codex-reviewer-a` 和 `codex-reviewer-b`，后端会把自报身份与本次凭据身份绑定，并拒绝同一凭据提交两份报告。文件应归运行账号所有，使用足够随机的十六进制值，且不能进入 Git 仓库。生产环境可参考 `scripts/server-pm2.config.cjs`。
-- DeepSeek 功能可选配置 `DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY_FILE`；也可在数据目录的 `secrets/deepseek-key` 放置受限密钥文件。调用 AI 时，相关描述、账簿摘要或批次数据会发送给服务提供方；AI 结果仅供参考，不能替代双重独立核验。
+- DeepSeek 功能可选配置 `DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY_FILE`；也可在数据目录的 `secrets/deepseek-key` 放置受限密钥文件。默认模型为 `deepseek-flash`，可使用 `DEEPSEEK_MODEL` 覆盖，API 地址可通过 `DEEPSEEK_API_BASE_URL` 配置（兼容 `DEEPSEEK_API_BASE`）。
+- AI 助手只读取本批结构化摘要；只有用户主动勾选后，本轮才会附带文件预览中的少量单元格。不会自动发送整份工作簿。AI 结果仅供参考，不能替代双重独立核验或人工采用确认。
 - 通过 HTTPS 对外服务时，设置 `ALLOCATION_PUBLIC_ORIGIN` 为正确的 HTTPS 源，并由可信反向代理验证主机名、覆盖转发头和配置证书；如有多个严格受控入口，可用英文逗号分隔完整 HTTPS 源，任何空项、非 HTTPS 或带路径/账户的无效项都会让公网入口整体拒绝。Node 服务继续仅监听本机。
 - Next.js 在独立部署时会发送 CSP、HSTS、`nosniff`、禁止嵌入、Referrer Policy 和 Permissions Policy 等完整安全响应头。若可信公网入口已经统一发送其中由入口负责的响应头，可设置 `ALLOCATION_EDGE_SECURITY_HEADERS=true`；应用会避免重复，同时通过页面 CSP meta 保留脚本和样式等细粒度限制，并继续发送 `X-Frame-Options`、`Cross-Origin-Opener-Policy` 和 `Cross-Origin-Resource-Policy`。上传接口在完整解析前限制请求体，并最多同时处理两份 XLSX/JSON；超限请求返回明确的 413 或 429，避免复杂压缩文件占满 Node 主进程。
 - `scripts/allocation-backup.mjs` 可按环境变量指定的数据和备份目录创建备份，并检查 SQLite/对象引用及恢复流程。`scripts/scheduled-maintenance.sh` 会先做数据库与对象备份，再拉取最新网站账簿 Excel 快照；生产环境可按当天分摊节奏安排定时执行。备份必须与源码和凭据分开保护。当前脚本负责同机备份；生产环境还应把已验证备份复制到独立机器或对象存储，并对定时任务失败配置外部告警。
