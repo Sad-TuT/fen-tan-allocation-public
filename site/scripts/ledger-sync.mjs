@@ -267,6 +267,7 @@ const versionName=snapshotDirectoryName(manifest);
 const versionDirectory=path.join(versionsRoot,versionName);
 const temp=path.join(parent,`.ledger-sync-stage-${randomUUID()}`);
 let targetCreated=false;
+let installedVersion=false;
 try{
   // A first sync may create the target root, but it must never leave a
   // half-created ledger behind when a later validation or publish fails.
@@ -310,12 +311,6 @@ try{
   }
   await syncFile(path.join(temp,MANIFEST_NAME),manifestBytes);
   await verifySnapshotFiles(temp,manifest,'下载快照');
-  const entries=await readdir(temp,{recursive:true,withFileTypes:true});
-  for(const entry of entries.sort((a,b)=>b.parentPath.length-a.parentPath.length)){
-    if(entry.isFile())await chmod(path.join(entry.parentPath,entry.name),0o400);
-    else if(entry.isDirectory())await chmod(path.join(entry.parentPath,entry.name),0o500);
-  }
-  await chmod(temp,0o500);
   await syncDirectory(temp);
   await mkdir(target,{recursive:true,mode:0o700});
   const targetInfo=await lstat(target);
@@ -340,6 +335,16 @@ try{
     await removeTree(temp);
   }else{
     await rename(temp,versionDirectory);
+    installedVersion=true;
+    // Keep the staging tree writable until after the directory rename. Some
+    // Linux filesystems reject renaming a read-only directory even though the
+    // source and destination parents are writable.
+    const entries=await readdir(versionDirectory,{recursive:true,withFileTypes:true});
+    for(const entry of entries.sort((a,b)=>b.parentPath.length-a.parentPath.length)){
+      if(entry.isFile())await chmod(path.join(entry.parentPath,entry.name),0o400);
+      else if(entry.isDirectory())await chmod(path.join(entry.parentPath,entry.name),0o500);
+    }
+    await chmod(versionDirectory,0o500);
     await syncDirectory(versionsRoot);
   }
   // The current manifest is the only moving pointer. Immutable version files
@@ -357,6 +362,7 @@ try{
   },null,2));
 }catch(error){
   await removeTree(temp);
+  if(installedVersion)await removeTree(versionDirectory);
   if(targetCreated)await removeTree(target);
   throw error;
 }
