@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {chmod,mkdtemp,rm,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -24,6 +24,7 @@ test('workspace GET and writes enforce auth, roles, and public host/origin',asyn
  const secret='c'.repeat(64),temporary=await mkdtemp(path.join(os.tmpdir(),'allocation-commit-'));
  const tokenFile=path.join(temporary,'commit-token');
  await writeFile(tokenFile,secret);
+ await chmod(tokenFile,0o600);
  process.env.ALLOCATION_PUBLIC_ORIGIN='https://allocation.example.invalid';
  process.env.ALLOCATION_COMMIT_TOKEN_FILE=tokenFile;
  try{
