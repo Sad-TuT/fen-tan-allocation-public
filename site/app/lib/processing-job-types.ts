@@ -1,4 +1,4 @@
-import type { AllocationPlan, DepartmentAssignment } from "./allocation";
+import type { AllocationPlan } from "./allocation";
 
 export type ProcessingJobStatus = "draft" | "prepared" | "adopted" | "discarded";
 export type ProcessingFileRole = "source" | "tax" | "tax-overrides" | "template" | "invoice" | "source-marked" | "source-remaining" | "audit";
@@ -51,6 +51,7 @@ export type ProcessingJob = ProcessingJobSummary & {
   templateFile: { name: string; sha256: string } | null;
   files: ProcessingFile[];
   plan: AllocationPlan | null;
+  planStale: boolean;
   taxPending: number;
   adoptedAt: string | null;
   adoptedBy: string | null;
@@ -62,7 +63,7 @@ export type ProcessingJob = ProcessingJobSummary & {
 export type ProcessingJobRequest =
   | { action: "create"; parentJobId?: string }
   | { action: "paste-source"; id: string; revision: number; text: string; fileName?: string; priority: number; ackAvailableOnly: true }
-  | { action: "simulate" | "prepare"; id: string; revision: number; product: string; price: string; quantity: number; assignments?: DepartmentAssignment[] }
+  | { action: "simulate" | "prepare"; id: string; revision: number; product: string; price: string; quantity: number; assignments?: unknown }
   | { action: "adopt"; id: string; revision: number; ack: "I_REVIEWED_FILES"; fileHashes: Record<string, string> }
   | { action: "discard"; id: string; revision: number; reason: string }
   | { action: "continue"; id: string; revision: number };

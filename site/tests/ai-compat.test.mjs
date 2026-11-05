@@ -39,7 +39,7 @@ registerHooks({ resolve(specifier, context, next) {
     export const simulate = async (...args) => {
       globalThis.__aiTest.calls.push(args);
       if(globalThis.__aiTest.mode === 'stale') throw new Error('余额版本已变化，请刷新后重新试算。');
-      return {version:27,product:args[0],priceCents:2000,plan:{groups:[],totalCents:6000,quantity:3,priceCents:2000}};
+      return {version:27,product:args[0],priceCents:2000,plan:{ruleVersion:'department-exact-v4',groups:[],totalCents:6000,quantity:3,priceCents:2000}};
     };
   `);
   if (context.parentURL?.endsWith('/app/lib/ai.ts') && specifier === './processing-jobs') return toModule(`
@@ -53,7 +53,7 @@ registerHooks({ resolve(specifier, context, next) {
 }});
 const { aiParseDraft, aiPrecheck, aiAsk, aiWorkspaceMessage, aiWorkspacePrecheck } = await import('../app/lib/ai.ts');
 
-test('AI draft trial uses the same captured workspace version and never supplies guessed assignments', async () => {
+test('AI product parsing routes to the exact versioned solver without assignments', async () => {
   globalThis.__aiTest.mode = 'success';
   const result = await aiParseDraft('测试输入', 'test-user-success');
   assert.deepEqual(globalThis.__aiTest.calls.at(-1), ['测试商品', '20.00', 3, 27]);
@@ -61,6 +61,8 @@ test('AI draft trial uses the same captured workspace version and never supplies
   assert.equal(result.simulation?.version,27);
   assert.equal(result.simulation?.product,'测试商品');
   assert.equal(result.simulation?.plan.totalCents,6000);
+  assert.equal(result.simulation?.plan.ruleVersion,'department-exact-v4');
+  assert.equal(Object.hasOwn(result.simulation ?? {},'assignments'),false);
   assert.equal(result.warning, null);
 });
 

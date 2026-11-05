@@ -376,7 +376,7 @@ export async function aiWorkspacePrecheck(input: { jobId: string; userId: string
   if (blankIndependentCount > 0) {
     const label = `${blankIndependentCount} 个独立组保留空白部门字段`;
     signals.push(label);
-    deterministic.push({ severity: 'low', title: '独立组保留空白部门字段', detail: '每条任一部门字段为空的来源行都会独立成组；预检只读取汇总，没有检查各行明细。', evidence: label });
+    deterministic.push({ severity: 'low', title: '独立组保留空白部门字段', detail: '按当前分组规则，任一部门字段为空的来源行保持独立成组，不与其他来源行合并，也不推测补填部门。预检没有检查行明细。', evidence: label });
   }
   if (groupedSourceDifference > 0 && !deterministic.some((risk) => risk.title === '金额核对差额不为零')) {
     const label = `${groupedSourceDifference} 个分组存在来源核对差异`;

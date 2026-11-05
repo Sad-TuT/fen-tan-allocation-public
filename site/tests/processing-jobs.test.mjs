@@ -124,6 +124,26 @@ test('file-processing batches preserve cents, hash-bound review, lineage, and le
   assert.equal(JSON.stringify(context).includes('000000000000012345'), false);
   assert.equal(JSON.stringify(context).includes('000012345678901234'), false);
 
+  // Historical candidates remain readable but cannot be recommitted under a
+  // new grouping rule or presented to AI as validated under current policy.
+  const stateRow = await env.DB.prepare('SELECT data_key FROM processing_jobs WHERE id=?').bind(job.id).first();
+  const originalStateKey = stateRow.data_key;
+  const object = await env.BUCKET.get(originalStateKey);
+  const objectBytes = Buffer.from(await object.arrayBuffer());
+  const legacyState = JSON.parse(objectBytes.toString('utf8'));
+  legacyState.plan.ruleVersion = 'department-compat-v3';
+  const legacyStateKey = `processing-jobs/${job.id}/states/synthetic-legacy-rule.json`;
+  await persistence.storeFile(legacyStateKey, Buffer.from(JSON.stringify(legacyState)), 'application/json; charset=utf-8');
+  await env.DB.prepare('UPDATE processing_jobs SET data_key=? WHERE id=?').bind(legacyStateKey, job.id).run();
+  const legacyJob = await jobs.getProcessingJob(job.id, owner);
+  assert.equal(legacyJob.planStale, true);
+  await assert.rejects(jobs.getProcessingAIJobContext(job.id, owner.userId, { includePrepared: true }), /旧分组规则/);
+  await assert.rejects(jobs.adoptProcessingJob({
+    id: job.id, revision: job.revision, ack: 'I_REVIEWED_FILES', fileHashes: hashes(job),
+  }, owner), /旧部门分组规则/);
+  assert.equal(Number((await env.DB.prepare('SELECT COUNT(*) AS count FROM processing_active_sources WHERE job_id=?').bind(job.id).first()).count), 0);
+  await env.DB.prepare('UPDATE processing_jobs SET data_key=? WHERE id=?').bind(originalStateKey, job.id).run();
+
   const invoiceFile = job.files.find(file => file.role === 'invoice');
   const invoicePreview = await jobs.previewProcessingJobFile({ id: job.id, fileId: invoiceFile.id, limit: 20 }, owner);
   assert.equal(invoicePreview.sheet.name, '开票');
@@ -184,6 +204,33 @@ test('file-processing batches preserve cents, hash-bound review, lineage, and le
   const secondSummary = await jobs.listProcessingJobs(owner);
   assert.equal(secondSummary.summary.prepared, 2);
   assert.equal(secondSummary.summary.adopted, 1);
+});
+
+test('each row with a blank department remains an independent exact-allocation group', async () => {
+  const owner = await addUser('operator-blank-groups');
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('金额来源');
+  sheet.getRow(3).values = ['申领人','申领部门','使用部门','成本中心','成本','费用承担法律主体','','申领用途'];
+  sheet.getCell('D2').value = 2;
+  sheet.getCell('E2').value = 2;
+  sheet.getRow(4).values = ['同一申领人','','','同一成本',1,'合成公司（L000001）','','同一用途'];
+  sheet.getRow(5).values = ['同一申领人','','','同一成本',1,'合成公司（L000001）','','同一用途'];
+  const source = { bytes: await bytes(workbook), name: '两条空白部门行.xlsx' };
+  let job = await jobs.createProcessingJob(owner);
+  job = await upload(owner, job, 'source', source, 1);
+
+  await assert.rejects(jobs.simulateProcessingJob({
+    id: job.id, revision: job.revision, product: '合成产品', price: '1', quantity: 2,
+    assignments: [{ sourceId: job.sources[0].id, rowId: 'fabricated-row', department: '猜测部门', useCenter: '猜测中心' }],
+  }, owner), /不允许人工补填部门/);
+
+  const { simulation } = await jobs.simulateProcessingJob({
+    id: job.id, revision: job.revision, product: '合成产品', price: '1', quantity: 2,
+  }, owner);
+  assert.equal(simulation.totalCents, 200);
+  assert.equal(simulation.groups.length, 2);
+  assert.notEqual(simulation.groups[0].key, simulation.groups[1].key);
+  assert.ok(simulation.groups.every(group => group.department === '' && group.useCenter === '' && group.availableCents === 100));
 });
 
 test('adopt versus discard CAS leaves source reservations consistent', async () => {

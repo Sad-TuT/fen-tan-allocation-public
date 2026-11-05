@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import ExcelJS from "exceljs";
 import { env } from "./node-runtime";
-import { planAllocation, validateAllocationPlan, type DepartmentAssignment } from "./allocation";
+import { ALLOCATION_RULE_VERSION, planAllocation, validateAllocationPlan } from "./allocation";
 import {
   assertDistinctSourceBalance, digest, generateBatchFiles, parseSource, parseTaxOverrides, parseTaxes, sourceBalanceFingerprint, type ImportedSource,
   type ProductHistory, type TaxOverride, type TaxRecord,
@@ -37,6 +37,7 @@ type JobData = {
   taxOverrideFileId: string | null; templateFileId: string | null; productHistory: ProductHistory[];
   product: string | null; priceCents: number | null; quantity: number | null;
   plan: ReturnType<typeof planAllocation> | null; files: StoredFile[];
+  planStale?: boolean;
   nextSourceFiles: { sourceId: string; fileId: string }[]; taxPending: number;
   adoptedAt: string | null; adoptedBy: string | null; discardedAt: string | null;
   discardReason: string | null; warnings: string[];
@@ -179,6 +180,7 @@ function publicJob(row: JobRow, data: JobData): ProcessingJob {
     adoptedBy: row.adopted_by ? String(row.adopted_by) : null,
     discardedAt: row.discarded_at ? String(row.discarded_at) : null,
     discardReason: row.discard_reason ? String(row.discard_reason) : null,
+    planStale: !!data.plan && data.plan.ruleVersion !== ALLOCATION_RULE_VERSION,
     warnings: data.warnings,
   };
 }
@@ -427,13 +429,13 @@ function makePlan(data: JobData, productValue: unknown, priceValue: unknown, qua
   if (!product || product.length > 80) throw new ProcessingJobError("请填写1至80字的商品名称。");
   if (!data.sources.length) throw new ProcessingJobError("请先上传至少一份金额来源表。");
   if (!Number.isSafeInteger(quantityValue) || Number(quantityValue) <= 0 || Number(quantityValue) > 1_000_000) throw new ProcessingJobError("数量必须为1到100万之间的正整数。");
-  const assignments: DepartmentAssignment[] = assignmentsValue === undefined ? [] : Array.isArray(assignmentsValue)
-    ? assignmentsValue as DepartmentAssignment[]
-    : (() => { throw new ProcessingJobError("部门归属格式无效，请重新试算。"); })();
-  if (assignments.length > 30_000) throw new ProcessingJobError("部门归属条目过多。");
+  if (assignmentsValue !== undefined && !Array.isArray(assignmentsValue)) throw new ProcessingJobError("部门归属格式无效，请重新试算。");
+  if (Array.isArray(assignmentsValue) && assignmentsValue.length > 0) {
+    throw new ProcessingJobError("当前分组规则不允许人工补填部门；来源中空白部门行会独立成组。请重新试算。", 409, "DEPARTMENT_ASSIGNMENTS_NOT_ALLOWED");
+  }
   const priceCents = typeof priceValue === "string" || typeof priceValue === "number" ? exactPriceCents(priceValue) : NaN;
   if (!Number.isSafeInteger(priceCents) || priceCents <= 0) throw new ProcessingJobError("单价必须是大于0且最多两位小数的金额。");
-  const plan = planAllocation(data.sources, priceCents, Number(quantityValue), {}, assignments);
+  const plan = planAllocation(data.sources, priceCents, Number(quantityValue));
   const validation = validateAllocationPlan(data.sources, priceCents, Number(quantityValue), plan);
   if (!validation.valid) throw new ProcessingJobError("内部核对未通过：" + validation.errors.join("；"), 400, "PLAN_INVALID");
   return plan;
@@ -509,7 +511,7 @@ export async function prepareProcessingJob(
   const priceCents = (typeof input.price === "string" || typeof input.price === "number")
     ? exactPriceCents(input.price) : NaN;
   if (!Number.isSafeInteger(priceCents) || priceCents <= 0) throw new ProcessingJobError("单价必须是大于0且最多两位小数的金额。");
-  if (row.status === "prepared" && Number(row.revision) === expectedRevision + 1 && data.product === product && data.priceCents === priceCents && data.quantity === input.quantity && JSON.stringify(data.plan?.departmentAssignments ?? []) === JSON.stringify(input.assignments ?? [])) {
+  if (row.status === "prepared" && !publicJob(row, data).planStale && Number(row.revision) === expectedRevision + 1 && data.product === product && data.priceCents === priceCents && data.quantity === input.quantity && JSON.stringify(data.plan?.departmentAssignments ?? []) === JSON.stringify(input.assignments ?? [])) {
     return { job: publicJob(row, data), simulation: data.plan! };
   }
   if (Number(row.revision) !== expectedRevision) throw new ProcessingJobError("本批资料已变化，请刷新后重新试算。", 409, "STALE_REVISION");
@@ -551,6 +553,14 @@ export async function adoptProcessingJob(input: { id: unknown; revision: unknown
       outputs.every(file => repeated[file.id] === file.sha256);
     if (matches) return publicJob(row, data);
     throw new ProcessingJobError("本批已采用，且文件版本与保存记录不同。", 409, "ADOPTED_FILE_MISMATCH");
+  }
+  if (data.plan?.ruleVersion !== ALLOCATION_RULE_VERSION) {
+    throw new ProcessingJobError("该候选文件按旧部门分组规则生成，不能直接采用。请保留原始输入并重新按当前规则试算。", 409, "ALLOCATION_RULE_VERSION_STALE");
+  }
+  const recomputed = planAllocation(data.sources, data.plan.priceCents, data.plan.quantity);
+  const replay = validateAllocationPlan(data.sources, data.plan.priceCents, data.plan.quantity, data.plan);
+  if (!replay.valid || JSON.stringify(data.plan) !== JSON.stringify(recomputed)) {
+    throw new ProcessingJobError("候选方案与当前确定性分摊规则重算结果不一致，不能采用。请重新试算并核对文件。", 409, "PLAN_REPLAY_MISMATCH");
   }
   if (Number(row.revision) !== revision) throw new ProcessingJobError("本批任务已变化，请刷新后重试。", 409, "STALE_REVISION");
   const hashes = input.fileHashes;
@@ -736,6 +746,14 @@ export async function getProcessingAIJobContext(id: unknown, userId: string, opt
     warnings: data.warnings.slice(0, 20).map(warning => warning.slice(0, 200)),
   };
   if (options.includePrepared && data.plan) {
+    if (data.plan.ruleVersion !== ALLOCATION_RULE_VERSION) {
+      throw new ProcessingJobError("该候选方案按旧分组规则生成，AI摘要不能把它标记为当前规则有效。请使用原始资金文件按新规则重算。", 409, "ALLOCATION_RULE_VERSION_STALE");
+    }
+    const replay = validateAllocationPlan(data.sources, data.plan.priceCents, data.plan.quantity, data.plan);
+    const deterministic = planAllocation(data.sources, data.plan.priceCents, data.plan.quantity);
+    if (!replay.valid || JSON.stringify(deterministic) !== JSON.stringify(data.plan)) {
+      throw new ProcessingJobError("候选方案与当前分组规则重新计算结果不一致，AI预检无法开始。", 409, "PLAN_REPLAY_MISMATCH");
+    }
     const groups = data.plan.groups;
     context.prepared = {
       fileCount: data.files.filter(file => ["invoice", "source-marked", "source-remaining", "audit"].includes(file.role)).length,

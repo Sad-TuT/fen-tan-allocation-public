@@ -412,6 +412,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
   async function prepare() {
     if (!job.templateFile) { setError("请先上传开票模板，再生成候选文件。"); return; }
     if (!simulation || !canWrite || job.status !== "draft") return;
+    if (!usesCurrentRules({ ...job, plan: simulation })) { setError("分摊规则已更新，请按当前规则重新试算后再生成文件。"); setSimulation(null); return; }
     try {
       const result = await operation<JobResponse & { simulation?: AllocationPlan }>("prepare", { action: "prepare", id: job.id, revision: job.revision, product: product.trim(), price, quantity: Number(quantity) });
       setSimulation(result.job.plan ?? result.simulation ?? simulation);
@@ -455,6 +456,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
     <StepRail current={step} />
     {error && <div className="job-page-error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}
     {job.warnings.map((warning, index) => <div className="job-page-warning" key={`${warning}-${index}`}><CircleAlert size={17} /><span>{warning}</span></div>)}
+    {!currentRuleVersion && job.plan && <div className="job-page-warning" role="status"><CircleAlert size={17} /><span>这批候选由旧分组规则生成，只能查阅。请从原始资金文件新建一批，用当前规则重新试算后再采用。</span></div>}
 
     <div className="job-layout">
       <div className="job-primary-column">
@@ -500,7 +502,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
       <div className="job-section-heading"><div><h2 id="job-candidate-heading">候选结果</h2><p>{job.status === "adopted" ? "这份剩余余额已标记为采用，可作为下一批输入。" : "先浏览并核对本批所有文件，再选择是否采用。"}</p></div><JobStatus status={job.status} /></div>
       <div className="job-candidate-files">{resultFiles.map((file) => <a key={file.id} className="job-candidate-file" href={`/api/jobs?id=${encodeURIComponent(job.id)}&download=${encodeURIComponent(file.id)}`}><span className="job-candidate-file-icon"><FileSpreadsheet size={17} /></span><span><strong>{file.fileName}</strong><small>{file.role === "invoice" ? "开票单" : file.role === "source-marked" ? `来源标红表${file.priority ? ` · 优先级 ${file.priority}` : ""}` : file.role === "source-remaining" ? `本批后剩余表${file.priority ? ` · 优先级 ${file.priority}` : ""}` : "分摊核对记录"} · {(file.size / 1024).toFixed(1)} KB</small></span><ArrowDownToLine size={16} /></a>)}</div>
       {job.taxPending > 0 && <p className="job-tax-warning"><CircleAlert size={16} />{job.taxPending} 项开票资料待核实。请查看开票单后再决定是否采用。</p>}
-      {job.status === "prepared" && canWrite && <div className="job-adopt-panel">
+      {job.status === "prepared" && canWrite && currentRuleVersion && <div className="job-adopt-panel">
         <label className="job-adopt-confirm"><input type="checkbox" checked={adoptConfirmed} onChange={(event) => setAdoptConfirmed(event.target.checked)} /><span>我已核对上方结果文件，确认将本批剩余表用作下一批余额。</span></label>
         <div className="job-adopt-actions"><p><LockKeyhole size={14} />仅把采用操作记入本批，不会修改旧版共享账簿。</p><Button type="button" disabled={!adoptConfirmed || !!busy} onClick={() => void adopt()}>{busy === "adopt" ? <LoaderCircle size={16} className="animate-spin" /> : <Check size={16} />}{busy === "adopt" ? "正在记录…" : "确认采用剩余表"}</Button></div>
       </div>}
