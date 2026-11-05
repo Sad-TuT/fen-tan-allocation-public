@@ -7,6 +7,7 @@ import JSZip from 'jszip';
 const MAX_DOWNLOAD_BYTES=100*1024*1024;
 const MANIFEST_NAME='账簿清单.json';
 const RECEIPT_NAME='同步接收记录.json';
+const HIGH_WATERMARK_SUFFIX='.sync-state.json';
 const sha256=(bytes)=>createHash('sha256').update(bytes).digest('hex');
 const isDigest=(value)=>typeof value==='string'&&/^[a-f0-9]{64}$/i.test(value);
 const assertDigest=(value,label)=>{
@@ -91,6 +92,62 @@ async function verifySnapshotFiles(root,manifest,label){
     const file=await regularFile(root,relative,`${label}税务资料：${relative}`);
     if(sha256(file.bytes)!==expected)throw new Error(`${label}税务资料哈希不符：${relative}`);
   }
+}
+async function readHighWatermark(pathname,target){
+  try{
+    const info=await lstat(pathname);
+    if(!info.isFile()||info.isSymbolicLink())throw new Error('同步最高水位必须是普通文件且不能是符号链接');
+    const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(await readFile(pathname))));
+    if(value?.schemaVersion!==1||value?.target!==target
+      ||!Number.isSafeInteger(value?.workspaceVersion)||value.workspaceVersion<0)throw new Error('同步最高水位内容无效');
+    assertDigest(value.stateDigest,'同步最高水位摘要');
+    return value;
+  }catch(error){
+    if(error?.code==='ENOENT')return null;
+    throw new Error(`同步最高水位无法校验，拒绝覆盖：${error instanceof Error?error.message:String(error)}`);
+  }
+}
+async function writeHighWatermark(pathname,target,manifest){
+  const bytes=Buffer.from(JSON.stringify({
+    schemaVersion:1,
+    target,
+    workspaceVersion:manifest.workspaceVersion,
+    stateDigest:manifest.stateDigest,
+    updatedAt:new Date().toISOString(),
+  },null,2),'utf8');
+  await publishFile(pathname,bytes);
+}
+async function loadInstalledVersions(target){
+  const versionsRoot=path.join(target,'versions');
+  let names;
+  try{
+    const info=await lstat(versionsRoot);
+    if(!info.isDirectory()||info.isSymbolicLink())throw new Error('versions 目录不能是符号链接');
+    names=await readdir(versionsRoot);
+  }catch(error){
+    if(error?.code==='ENOENT')return [];
+    throw error;
+  }
+  const installed=[];
+  const seenVersions=new Map();
+  for(const name of names.sort()){
+    if(!name.startsWith('v'))continue;
+    const match=/^v(\d+)-([a-f0-9]{16})$/.exec(name);
+    if(!match)throw new Error(`发现无法识别的版本目录：${name}`);
+    const root=path.join(versionsRoot,name);
+    const info=await lstat(root);
+    if(!info.isDirectory()||info.isSymbolicLink())throw new Error(`版本目录必须是普通目录：${name}`);
+    const inner=await regularFile(root,MANIFEST_NAME,`版本目录 ${name} 的账簿清单`);
+    const {manifest}=parseManifest(inner.bytes,`版本目录 ${name} 的账簿清单`);
+    if(String(manifest.workspaceVersion)!==match[1]
+      ||manifest.stateDigest.slice(0,16).toLowerCase()!==match[2])throw new Error(`版本目录名与账簿清单不一致：${name}`);
+    await verifySnapshotFiles(root,manifest,`已安装版本 ${name}`);
+    const previous=seenVersions.get(manifest.workspaceVersion);
+    if(previous&&previous!==manifest.stateDigest.toLowerCase())throw new Error(`同一已安装版本存在不同账簿摘要：${name}`);
+    seenVersions.set(manifest.workspaceVersion,manifest.stateDigest.toLowerCase());
+    installed.push({root,manifest,name});
+  }
+  return installed;
 }
 async function loadExistingManifest(target){
   let exists=false;
@@ -203,12 +260,29 @@ const target=absolute(config.target_directory,'本地快照目录');
 const parent=path.dirname(target);
 await mkdir(parent,{recursive:true,mode:0o700});
 await ordinaryDirectoryChain(parent,'本地快照目录的上级目录');
-const lockPath=path.join(parent,`.ledger-sync-${sha256(Buffer.from(target.toLowerCase(),'utf8')).slice(0,16)}.lock`);
+const targetLockKey=sha256(Buffer.from(target.toLowerCase(),'utf8')).slice(0,16);
+const lockPath=path.join(parent,`.ledger-sync-${targetLockKey}.lock`);
+const highWatermarkPath=path.join(parent,`.ledger-sync-${targetLockKey}${HIGH_WATERMARK_SUFFIX}`);
 const syncLock=await acquireLock(lockPath,target);
 
 try{
 const existing=await loadExistingManifest(target);
 const previousManifest=existing?.manifest??null;
+const highWatermark=await readHighWatermark(highWatermarkPath,target);
+if(!existing&&highWatermark)throw new Error('本地快照根目录缺失但同步最高水位仍存在，已拒绝静默回滚');
+const installed=await loadInstalledVersions(target);
+const installedHighest=installed.reduce((highest,item)=>
+  !highest||item.manifest.workspaceVersion>highest.manifest.workspaceVersion?item:highest,null);
+if(installedHighest&&previousManifest&&installedHighest.manifest.workspaceVersion>previousManifest.workspaceVersion)
+  throw new Error('活动账簿清单早于磁盘已安装的最高版本，已拒绝回滚');
+if(installedHighest&&previousManifest&&installedHighest.manifest.workspaceVersion===previousManifest.workspaceVersion
+  &&installedHighest.manifest.stateDigest.toLowerCase()!==previousManifest.stateDigest.toLowerCase())
+  throw new Error('活动账簿清单与同版本已安装快照摘要不一致，已拒绝覆盖');
+if(highWatermark&&previousManifest&&highWatermark.workspaceVersion>previousManifest.workspaceVersion)
+  throw new Error('活动账簿清单早于同步最高水位，已拒绝回滚');
+if(highWatermark&&previousManifest&&highWatermark.workspaceVersion===previousManifest.workspaceVersion
+  &&String(highWatermark.stateDigest).toLowerCase()!==previousManifest.stateDigest.toLowerCase())
+  throw new Error('活动账簿清单与同步最高水位摘要不一致，已拒绝覆盖');
 
 const response=await fetch(new URL('/api/ledger/export',baseUrl),{headers:{authorization:`Bearer ${token}`},cache:'no-store',redirect:'error'});
 if(!response.ok){
@@ -233,6 +307,18 @@ if(previousManifest){
   if(manifest.workspaceVersion<previousManifest.workspaceVersion)throw new Error('网站返回的账簿版本早于本地快照，已拒绝回滚');
   if(manifest.workspaceVersion===previousManifest.workspaceVersion&&declaredDigest.toLowerCase()!==previousManifest.stateDigest.toLowerCase())throw new Error('同一网站版本返回了不同账簿摘要，已拒绝覆盖本地快照');
 }
+if(highWatermark){
+  if(manifest.workspaceVersion<highWatermark.workspaceVersion)throw new Error('网站返回的账簿版本早于同步最高水位，已拒绝回滚');
+  if(manifest.workspaceVersion===highWatermark.workspaceVersion
+    &&declaredDigest.toLowerCase()!==String(highWatermark.stateDigest).toLowerCase())
+    throw new Error('同一网站版本返回了不同于同步最高水位的账簿摘要，已拒绝覆盖');
+}
+if(installedHighest){
+  if(manifest.workspaceVersion<installedHighest.manifest.workspaceVersion)throw new Error('网站返回的账簿版本早于磁盘已安装最高版本，已拒绝回滚');
+  if(manifest.workspaceVersion===installedHighest.manifest.workspaceVersion
+    &&declaredDigest.toLowerCase()!==installedHighest.manifest.stateDigest.toLowerCase())
+    throw new Error('同一网站版本与磁盘已安装快照摘要不一致，已拒绝覆盖');
+}
 if(!Array.isArray(manifest.sources)||!manifest.sources.length)throw new Error('账簿清单没有金额来源');
 if(new Set(manifest.sources.map(source=>source.id)).size!==manifest.sources.length)throw new Error('账簿来源编号重复');
 if(new Set(manifest.sources.map(source=>source.priority)).size!==manifest.sources.length)throw new Error('账簿来源优先级重复');
@@ -256,6 +342,10 @@ if(previousManifest&&previousManifest.workspaceVersion===manifest.workspaceVersi
   }catch{
     await publishFile(path.join(target,RECEIPT_NAME),receiptBytes);
   }
+  if(!highWatermark||highWatermark.workspaceVersion!==manifest.workspaceVersion
+    ||String(highWatermark.stateDigest).toLowerCase()!==declaredDigest.toLowerCase()){
+    await writeHighWatermark(highWatermarkPath,target,manifest);
+  }
   console.log(JSON.stringify({
     ok:true,unchanged:true,target,snapshotDirectory:existing.root,workspaceVersion:manifest.workspaceVersion,
     stateDigest:manifest.stateDigest,
@@ -268,6 +358,7 @@ const versionDirectory=path.join(versionsRoot,versionName);
 const temp=path.join(parent,`.ledger-sync-stage-${randomUUID()}`);
 let targetCreated=false;
 let installedVersion=false;
+ let manifestPublished=false;
 try{
   // A first sync may create the target root, but it must never leave a
   // half-created ledger behind when a later validation or publish fails.
@@ -347,23 +438,29 @@ try{
     await chmod(versionDirectory,0o500);
     await syncDirectory(versionsRoot);
   }
-  // The current manifest is the only moving pointer. Immutable version files
-  // are installed first, so a crash leaves either the old or new ledger valid.
-  await publishFile(path.join(target,MANIFEST_NAME),manifestBytes);
+  // The current manifest is the only moving pointer. Publish the
+  // non-authoritative receipt first, then switch the pointer. If anything
+  // fails after the switch, preserve the complete immutable version so the
+  // active manifest never points at a deleted directory.
   const receiptBytes=Buffer.from(JSON.stringify({
     schema_version:1,received_at:new Date().toISOString(),workspace_version:manifest.workspaceVersion,state_digest:manifest.stateDigest,
     snapshot_directory:path.relative(target,versionDirectory),source_count:manifest.sources.length,
     source_available_cents:manifest.sources.reduce((sum,source)=>sum+source.availableCents,0),
   },null,2),'utf8');
   await publishFile(path.join(target,RECEIPT_NAME),receiptBytes);
+  await publishFile(path.join(target,MANIFEST_NAME),manifestBytes);
+  manifestPublished=true;
+  await writeHighWatermark(highWatermarkPath,target,manifest);
   console.log(JSON.stringify({
     ok:true,target,snapshotDirectory:versionDirectory,workspaceVersion:manifest.workspaceVersion,stateDigest:manifest.stateDigest,
     sources:manifest.sources.map(source=>({priority:source.priority,name:source.name,availableCents:source.availableCents,file:source.file})),
   },null,2));
 }catch(error){
   await removeTree(temp);
-  if(installedVersion)await removeTree(versionDirectory);
-  if(targetCreated)await removeTree(target);
+  if(!manifestPublished){
+    if(installedVersion)await removeTree(versionDirectory);
+    if(targetCreated)await removeTree(target);
+  }
   throw error;
 }
 }

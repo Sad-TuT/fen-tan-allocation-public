@@ -2,14 +2,6 @@ import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqli
 
 // Large immutable workspace/batch payloads live in R2. D1 owns their current
 // pointers, the balance version and the transaction that posts a reviewed batch.
-export const allocationWorkspace = sqliteTable("allocation_workspace", {
-  id: text("id").primaryKey(),
-  version: integer("version").notNull().default(0),
-  dataKey: text("data_key"),
-  lastBatchId: text("last_batch_id"),
-  updatedAt: text("updated_at").notNull(),
-});
-
 export const allocationBatches = sqliteTable("allocation_batches", {
   id: text("id").primaryKey(),
   product: text("product").notNull(),
@@ -24,11 +16,19 @@ export const allocationBatches = sqliteTable("allocation_batches", {
   completedAt: text("completed_at"),
 });
 
+export const allocationWorkspace = sqliteTable("allocation_workspace", {
+  id: text("id").primaryKey(),
+  version: integer("version").notNull().default(0),
+  dataKey: text("data_key"),
+  lastBatchId: text("last_batch_id").references(() => allocationBatches.id),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const allocationReviews = sqliteTable(
   "allocation_reviews",
   {
     id: text("id").primaryKey(),
-    batchId: text("batch_id").notNull(),
+    batchId: text("batch_id").notNull().references(() => allocationBatches.id),
     reviewerId: text("reviewer_id").notNull(),
     reviewerRunId: text("reviewer_run_id").notNull(),
     status: text("status").notNull(),
@@ -46,7 +46,7 @@ export const allocationReviews = sqliteTable(
 export const allocationEvents = sqliteTable("allocation_events", {
   id: text("id").primaryKey(),
   kind: text("kind").notNull(),
-  batchId: text("batch_id"),
+  batchId: text("batch_id").references(() => allocationBatches.id),
   actor: text("actor").notNull(),
   createdAt: text("created_at").notNull(),
   detailJson: text("detail_json").notNull(),

@@ -7,7 +7,7 @@ const expectation = {
   expectedFinancials: { totalCents: 10000000, quantity: 4000, sourceUsed: { source1: 2500000, source2: 7500000 }, sourceRemaining: { source1: 15000000, source2: 9500000 } },
 };
 function review(id = "agent-a", run = "run-a"): any {
-  return { reviewerId: id, reviewerRunId: run, origin: "codex_subagent", status: "passed", reviewDigest: expectation.reviewDigest, financials: structuredClone(expectation.expectedFinancials), checks: [...policy.CORE_REVIEW_CHECKS], issues: [], unverified: [] };
+  return { reviewerId: id, reviewerRunId: run, submittedBy: id, origin: "codex_subagent", status: "passed", reviewDigest: expectation.reviewDigest, financials: structuredClone(expectation.expectedFinancials), checks: [...policy.CORE_REVIEW_CHECKS], issues: [], unverified: [] };
 }
 const rejected = (fn: () => unknown, code: string) => assert.throws(fn, (error: any) => error.code === code);
 
@@ -20,6 +20,16 @@ test("one review cannot authorize posting", () => {
 test("same agent or same execution cannot count twice", () => {
   rejected(() => policy.assertTwoIndependentReviews(expectation, [review(), review("agent-a", "run-b")]), "REVIEWERS_NOT_INDEPENDENT");
   rejected(() => policy.assertTwoIndependentReviews(expectation, [review(), review("agent-b", "run-a")]), "REVIEWERS_NOT_INDEPENDENT");
+});
+test("two claimed IDs submitted through one credential cannot count twice", () => {
+  const second = review("agent-b", "run-b");
+  second.submittedBy = "agent-a";
+  rejected(() => policy.assertTwoIndependentReviews(expectation, [review(), second]), "REVIEWERS_NOT_INDEPENDENT");
+});
+test("a report ID cannot differ from the authenticated submission identity", () => {
+  const second = review("agent-b", "run-b");
+  second.submittedBy = "agent-c";
+  rejected(() => policy.assertTwoIndependentReviews(expectation, [review(), second]), "REVIEW_IDENTITY_MISMATCH");
 });
 test("changed final file digest invalidates an old passed report", () => {
   const report = review(); report.reviewDigest = "b".repeat(64);
@@ -141,14 +151,48 @@ test("missing or failed second review leaves actual workspace version and state 
   const { sql } = fixture();
   try {
     const batch = await staged();
-    await persistence.submitReview(batch.id, review(), "codex-owner");
+    await persistence.submitReview(batch.id, review(), "agent-a");
     await assert.rejects(persistence.commitBatch(batch.id, batch.data.nextState, "operator"), /两名/);
     assert.deepEqual(await persistence.loadWorkspace(), { version: 1, state: { sources: ["before"], taxes: [], productHistory: [] } });
     const failure = review("agent-b", "run-b"); failure.status = "failed"; failure.issues = ["核验发现差额"];
-    await persistence.submitReview(batch.id, failure, "codex-owner");
+    await persistence.submitReview(batch.id, failure, "agent-b");
     await assert.rejects(persistence.commitBatch(batch.id, batch.data.nextState, "operator"), /未通过/);
     assert.equal((await persistence.loadWorkspace()).version, 1);
     assert.equal((await persistence.getBatch(batch.id)).status, "awaiting_review");
+  } finally { sql.close(); }
+});
+
+test("review identity cannot be claimed through a different or reused submission credential", async () => {
+  const { sql } = fixture();
+  try {
+    const batch = await staged();
+    await assert.rejects(
+      persistence.submitReview(batch.id, review("agent-a", "run-a"), "agent-b"),
+      /身份.*凭据/,
+    );
+    await persistence.submitReview(batch.id, review("agent-a", "run-a"), "agent-a");
+    await assert.rejects(
+      persistence.submitReview(batch.id, review("agent-b", "run-b"), "agent-a"),
+      /复核报告身份必须与本次独立核验凭据一致/,
+    );
+  } finally { sql.close(); }
+});
+
+test("an identical submission retry is idempotent while changed content is rejected", async () => {
+  const { sql } = fixture();
+  try {
+    const batch = await staged();
+    const first = review("agent-a", "run-a");
+    await persistence.submitReview(batch.id, first, "agent-a");
+    await persistence.submitReview(batch.id, structuredClone(first), "agent-a");
+    assert.equal((sql.prepare("SELECT COUNT(*) AS n FROM allocation_reviews").get() as any).n, 1);
+    const changed = review("agent-a", "run-a");
+    changed.summary = "内容发生变化";
+    await assert.rejects(
+      persistence.submitReview(batch.id, changed, "agent-a"),
+      /不能提交不同的第二份报告/,
+    );
+    assert.equal((sql.prepare("SELECT COUNT(*) AS n FROM allocation_reviews").get() as any).n, 1);
   } finally { sql.close(); }
 });
 
@@ -156,8 +200,8 @@ test("same batch retry posts balance once and preserves one commit event", async
   const { sql } = fixture();
   try {
     const batch = await staged();
-    await persistence.submitReview(batch.id, review(), "codex-owner");
-    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "codex-owner");
+    await persistence.submitReview(batch.id, review(), "agent-a");
+    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "agent-b");
     assert.equal((await persistence.commitBatch(batch.id, batch.data.nextState, "operator")).status, "completed");
     assert.equal((await persistence.commitBatch(batch.id, batch.data.nextState, "operator")).status, "completed");
     assert.deepEqual(await persistence.loadWorkspace(), { version: 2, state: batch.data.nextState });
@@ -169,8 +213,8 @@ test("reviewed batch cannot overwrite an intervening source import", async () =>
   const { sql } = fixture();
   try {
     const batch = await staged();
-    await persistence.submitReview(batch.id, review(), "codex-owner");
-    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "codex-owner");
+    await persistence.submitReview(batch.id, review(), "agent-a");
+    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "agent-b");
     const imported = { sources: ["newly imported"], taxes: [], productHistory: [] };
     await persistence.saveWorkspace(1, imported, "operator-b");
     await assert.rejects(persistence.commitBatch(batch.id, batch.data.nextState, "operator"), /余额.*更新/);
@@ -183,8 +227,8 @@ test("final file mutation invalidates review and cannot change live balance", as
   const { sql, objects } = fixture();
   try {
     const batch = await staged();
-    await persistence.submitReview(batch.id, review(), "codex-owner");
-    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "codex-owner");
+    await persistence.submitReview(batch.id, review(), "agent-a");
+    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "agent-b");
     const key = batch.data.manifest[0].key;
     await assert.rejects(persistence.storeFile(key, new TextEncoder().encode("different"), "application/octet-stream"), /阻止覆盖/);
     const original = objects.get(key)!;
@@ -198,8 +242,8 @@ test("a caller cannot swap next balance after two passing reviews", async () => 
   const { sql } = fixture();
   try {
     const batch = await staged();
-    await persistence.submitReview(batch.id, review(), "codex-owner");
-    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "codex-owner");
+    await persistence.submitReview(batch.id, review(), "agent-a");
+    await persistence.submitReview(batch.id, review("agent-b", "run-b"), "agent-b");
     await assert.rejects(persistence.commitBatch(batch.id, { ...batch.data.nextState, sources: ["unreviewed balance"] }, "operator"), /下一批余额.*不一致/);
     assert.equal((await persistence.loadWorkspace()).version, 1);
   } finally { sql.close(); }

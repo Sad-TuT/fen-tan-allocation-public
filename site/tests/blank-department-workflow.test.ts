@@ -29,7 +29,7 @@ async function stage(id:string,version:number,snapshotSource:any,legacy=false){
   const snapshot=legacy?{state}:{state,ruleVersion:plan.ruleVersion,departmentAssignments:plan.departmentAssignments,groupMembership:plan.groupMembership};
   const batch={id,product:'测试商品',createdAt:new Date().toISOString(),createdBy:'test',versionAtCreation:version,status:'awaiting_review',data:{reviewDigest:'a'.repeat(64),expectedFinancials:financials,manifest,nextState,plan,snapshot}};
   await persistence.createBatch(batch);
-  for(const n of [1,2])await persistence.submitReview(id,{reviewerId:`agent-${n}`,reviewerRunId:`run-${n}`,origin:'codex_subagent',status:'passed',reviewDigest:'a'.repeat(64),financials,checks:[...CORE_REVIEW_CHECKS],issues:[],unverified:[]},'reviewer');
+  for(const n of [1,2])await persistence.submitReview(id,{reviewerId:`agent-${n}`,reviewerRunId:`run-${n}`,origin:'codex_subagent',status:'passed',reviewDigest:'a'.repeat(64),financials,checks:[...CORE_REVIEW_CHECKS],issues:[],unverified:[]},`agent-${n}`);
   return batch;
 }
 

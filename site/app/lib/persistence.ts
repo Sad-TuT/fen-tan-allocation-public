@@ -170,7 +170,14 @@ export async function submitReview(batchId: string, value: unknown, actor: strin
   const workspace = await loadWorkspace();
   if (workspace.version !== batch.versionAtCreation) throw new Error("批次余额版本已过期，请重新试算后核验。");
   const report = validateReviewReport(batch.data as any, value);
+  if (report.reviewerId !== actor) throw new Error("复核报告身份必须与本次独立核验凭据一致。");
   const existing = await getReviews(batchId);
+  const sameCredential = existing.find((item) => item.submittedBy === actor);
+  if (sameCredential) {
+    const normalized = validateReviewReport(batch.data as any, sameCredential);
+    if (stableJSONString(normalized) === stableJSONString(report)) return;
+    throw new Error("同一独立核验凭据不能提交不同的第二份报告。");
+  }
   const same = existing.find((item) => item.reviewerId === report.reviewerId || item.reviewerRunId === report.reviewerRunId);
   if (same) {
     const normalized = validateReviewReport(batch.data as any, same);

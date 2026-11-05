@@ -52,5 +52,5 @@ for(const [index,entry] of bundle.manifest.entries()){
 await writeFile(path.join(run,'review-bundle.json'),JSON.stringify(bundle,null,2));
 await writeFile(path.join(run,'exported-files.json'),JSON.stringify(exported,null,2));
 const summary=await workflow.stateSummary();
-if(summary.version!==3 || batch.status!=='awaiting_review' || bundle.reviews.length!==0)throw new Error('Unexpected synthetic pre-review state');
+if(summary.version!==3 || batch.status!=='awaiting_review' || bundle.reviewStatus.submitted!==false)throw new Error('Unexpected synthetic pre-review state');
 console.log(JSON.stringify({synthetic:true,run,batchId:batch.id,reviewDigest:bundle.reviewDigest,files:exported.length,workspaceVersion:summary.version,status:batch.status}));

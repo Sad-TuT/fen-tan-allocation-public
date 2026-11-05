@@ -200,6 +200,22 @@ test('a first-sync payload failure removes the newly created target root',async(
   }finally{await item.close();}
 });
 
+test('a receipt publish failure cannot leave the active pointer aimed at a deleted version',async()=>{
+  const working=await mkdtemp(path.join(work,'receipt-publish-failure-'));
+  const item=await fixture(working);
+  try{
+    await oldSnapshot(item.target,6);
+    await mkdir(path.join(item.target,'同步接收记录.json'));
+    const run=await runSync(item.configFile);
+    assert.equal(run.ok,false);
+    const active=JSON.parse(await readFile(path.join(item.target,'账簿清单.json'),'utf8'));
+    assert.equal(active.workspaceVersion,6);
+    assert.equal(await readFile(path.join(item.target,'old-marker.txt'),'utf8'),'keep-me');
+    const versions=await readFile(path.join(item.target,'versions')).catch(()=>null);
+    assert.equal(versions,null);
+  }finally{await item.close();}
+});
+
 test('a concurrent local sync is blocked by an exclusive lock',async()=>{
   const working=await mkdtemp(path.join(work,'sync-lock-'));
   const item=await fixture(working);
@@ -250,6 +266,35 @@ test('an older website version cannot roll back a newer local snapshot',async()=
     assert.match(run.stderr,/拒绝回滚/);
     assert.equal(await readFile(path.join(item.target,'old-marker.txt'),'utf8'),'keep-me');
   }finally{await item.close();}
+});
+
+test('rewriting the active root and receipt to an older valid version cannot bypass installed-version and high-watermark guards',async()=>{
+  const working=await mkdtemp(path.join(work,'root-pointer-rollback-'));
+  const firstItem=await fixture(working,{version:7});
+  const base=firstItem.base;
+  let firstRootManifest='',firstReceipt='';
+  try{
+    const first=await runSync(firstItem.configFile);
+    assert.equal(first.ok,true,first.stderr);
+    firstRootManifest=await readFile(path.join(firstItem.target,'账簿清单.json'),'utf8');
+    firstReceipt=await readFile(path.join(firstItem.target,'同步接收记录.json'),'utf8');
+  }finally{await firstItem.close();}
+  const secondItem=await fixture(working,{version:8,base});
+  try{
+    const second=await runSync(secondItem.configFile);
+    assert.equal(second.ok,true,second.stderr);
+  }finally{await secondItem.close();}
+  await chmod(path.join(secondItem.target,'账簿清单.json'),0o600);
+  await chmod(path.join(secondItem.target,'同步接收记录.json'),0o600);
+  await writeFile(path.join(secondItem.target,'账簿清单.json'),firstRootManifest,{mode:0o600});
+  await writeFile(path.join(secondItem.target,'同步接收记录.json'),firstReceipt,{mode:0o600});
+  const rollbackItem=await fixture(working,{version:7,base});
+  try{
+    const rollback=await runSync(rollbackItem.configFile);
+    assert.equal(rollback.ok,false);
+    assert.match(rollback.stderr,/最高版本|最高水位/);
+    assert.equal(JSON.parse(await readFile(path.join(secondItem.target,'同步接收记录.json'),'utf8')).workspace_version,7);
+  }finally{await rollbackItem.close();}
 });
 
 test('editing a current-version snapshot file is detected before replacement',async()=>{

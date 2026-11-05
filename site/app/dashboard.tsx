@@ -55,9 +55,9 @@ class RequestError extends Error {
   constructor(message: string, public data: any) { super(message); }
 }
 
-async function request(body: Record<string, unknown> | FormData) {
+async function request(body: Record<string, unknown> | FormData, extraHeaders?: Record<string, string>) {
   const multipart = body instanceof FormData;
-  const response = await fetch("/api/workspace", { method: "POST", headers: multipart ? undefined : { "content-type": "application/json" }, body: multipart ? body : JSON.stringify(body) });
+  const response = await fetch("/api/workspace", { method: "POST", headers: multipart ? extraHeaders : { "content-type": "application/json", ...extraHeaders }, body: multipart ? body : JSON.stringify(body) });
   if (response.status === 401) { window.location.assign("/login"); throw new Error("登录已失效，请重新登录。"); }
   let data: any;
   try { data = await response.json(); } catch { throw new Error("无法读取服务器结果，请刷新页面并检查登录状态。"); }
@@ -261,7 +261,9 @@ export default function Dashboard({ user }: { user: User }) {
   async function commit() {
     if (!selectedBatch || !canCommit) return;
     await perform("commit", async () => {
-      await request({ action: "commit", id: selectedBatch.id });
+      const token = window.prompt("请输入独立入账控制口令。口令只用于本次请求，不会保存在浏览器中。");
+      if (!token) throw new Error("未输入独立入账控制口令，余额不会改变。");
+      await request({ action: "commit", id: selectedBatch.id }, { "x-allocation-commit-token": token });
       setSelectedBatch(await request({ action: "batch", id: selectedBatch.id })); await refresh();
       setFlash({ kind: "success", title: "正式入账完成", message: "各来源实际用额已登记，剩余金额已接续为下一批余额。" });
     });

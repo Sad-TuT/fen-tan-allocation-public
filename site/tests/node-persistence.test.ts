@@ -41,10 +41,10 @@ function report(id:string){return {reviewerId:`agent-${id}`,reviewerRunId:`run-$
 test('real Node storage: reviewed batch only posts once and rejects mutations and stale balances',async()=>{
  await persistence.saveWorkspace(0,{sources:['before'],taxes:[],productHistory:[]},'synthetic');
  const batch=await stage(1);
- await persistence.submitReview(batch.id,report('one'),'synthetic-reviewer');
+ await persistence.submitReview(batch.id,report('one'),'agent-one');
  await assert.rejects(persistence.commitBatch(batch.id,batch.data.nextState,'synthetic'),/两名/);
  assert.equal((await persistence.loadWorkspace()).version,1);
- await persistence.submitReview(batch.id,report('two'),'synthetic-reviewer');
+ await persistence.submitReview(batch.id,report('two'),'agent-two');
  const filePath=path.join(dataRoot,'objects',...batch.data.manifest[0].key.split('/'));
  const original=await readFile(filePath);const tampered=Buffer.from(original);tampered[tampered.length-1]^=1;
  await writeFile(filePath,tampered);
@@ -57,8 +57,8 @@ test('real Node storage: reviewed batch only posts once and rejects mutations an
  await persistence.commitBatch(batch.id,batch.data.nextState,'synthetic');
  assert.equal((await persistence.loadWorkspace()).version,2);
  const stale=await stage(2);
- await persistence.submitReview(stale.id,report('three'),'synthetic-reviewer');
- await persistence.submitReview(stale.id,report('four'),'synthetic-reviewer');
+ await persistence.submitReview(stale.id,report('three'),'agent-three');
+ await persistence.submitReview(stale.id,report('four'),'agent-four');
  const newer={sources:['newer'],taxes:[],productHistory:[]};
  await persistence.saveWorkspace(2,newer,'synthetic');
  await assert.rejects(persistence.commitBatch(stale.id,stale.data.nextState,'synthetic'),/余额.*更新/);

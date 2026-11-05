@@ -24,14 +24,40 @@ async function syncDirs(dir){if(process.platform==='win32')return;for(const e of
 async function writeSynced(file,data){const f=await open(file,'wx',0o600);try{await f.writeFile(data);await f.sync();}finally{await f.close();}}
 function objectBytes(raw){if(raw.length<4)throw new Error('Invalid object header');const n=raw.readUInt32BE(0);if(n>4096||raw.length<4+n)throw new Error('Invalid object metadata');const meta=JSON.parse(raw.subarray(4,4+n).toString('utf8'));if(typeof meta.contentType!=='string')throw new Error('Missing object type');return raw.subarray(4+n);}
 function snapshotDb(source,target){const db=new DatabaseSync(source,{readOnly:true});try{db.exec('PRAGMA busy_timeout=5000');db.prepare('VACUUM INTO ?').run(target);}finally{db.close();}}
-function inspectDb(file){const db=new DatabaseSync(file,{readOnly:true});try{const integrity=db.prepare('PRAGMA integrity_check').all();if(integrity.length!==1||Object.values(integrity[0])[0]!=='ok')throw new Error('SQLite integrity check failed');const foreign=db.prepare('PRAGMA foreign_key_check').all();if(foreign.length)throw new Error('SQLite foreign key check failed');const rows=[];for(const name of ['allocation_workspace','allocation_batches','allocation_reviews'])for(const x of db.prepare(`SELECT data_key FROM ${name} WHERE data_key IS NOT NULL`).all())rows.push(x.data_key);return rows;}finally{db.close();}}
+function inspectDb(file){
+ const db=new DatabaseSync(file,{readOnly:true});
+ try{
+  const integrity=db.prepare('PRAGMA integrity_check').all();
+  if(integrity.length!==1||Object.values(integrity[0])[0]!=='ok')throw new Error('SQLite integrity check failed');
+  const foreign=db.prepare('PRAGMA foreign_key_check').all();
+  if(foreign.length)throw new Error('SQLite foreign key check failed');
+  // Older databases were created before the declarative foreign keys and
+  // therefore need explicit orphan checks. These queries also keep backups
+  // safe while a migrated database is being rolled forward.
+  const orphanReviews=db.prepare(`SELECT r.id FROM allocation_reviews r
+    LEFT JOIN allocation_batches b ON b.id=r.batch_id WHERE b.id IS NULL LIMIT 1`).get();
+  if(orphanReviews)throw new Error(`SQLite orphan review: ${orphanReviews.id}`);
+  const orphanWorkspace=db.prepare(`SELECT w.id FROM allocation_workspace w
+    LEFT JOIN allocation_batches b ON b.id=w.last_batch_id
+    WHERE w.last_batch_id IS NOT NULL AND b.id IS NULL LIMIT 1`).get();
+  if(orphanWorkspace)throw new Error(`SQLite orphan workspace last_batch_id: ${orphanWorkspace.id}`);
+  const orphanEvents=db.prepare(`SELECT e.id FROM allocation_events e
+    LEFT JOIN allocation_batches b ON b.id=e.batch_id
+    WHERE e.batch_id IS NOT NULL AND b.id IS NULL LIMIT 1`).get();
+  if(orphanEvents)throw new Error(`SQLite orphan event: ${orphanEvents.id}`);
+  const rows=[];
+  for(const name of ['allocation_workspace','allocation_batches','allocation_reviews'])
+   for(const x of db.prepare(`SELECT data_key FROM ${name} WHERE data_key IS NOT NULL`).all())rows.push(x.data_key);
+  return rows;
+ }finally{db.close();}
+}
 async function validateReferences(dir){
  const keys=inspectDb(path.join(dir,'ledger.sqlite'));
  const objectRoot=path.join(dir,'objects');
  async function get(key){return objectBytes(await readFile(within(objectRoot,key)));}
- function find(x,out){if(!x||typeof x!=='object')return;if(!Array.isArray(x)){const k=typeof x.fileKey==='string'?x.fileKey:typeof x.key==='string'&&/^(inputs|taxes|batches)\//.test(x.key)?x.key:null;if(k){if(typeof x.sha256!=='string'||!/^[a-f0-9]{64}$/i.test(x.sha256))throw new Error('Referenced object missing valid digest');out.push([safeKey(k),x.sha256.toLowerCase()]);}for(const v of Object.values(x))find(v,out);}else for(const v of x)find(v,out);}
+ function find(x,out){if(!x||typeof x!=='object')return;if(!Array.isArray(x)){const candidate=typeof x.fileKey==='string'?x.fileKey:typeof x.key==='string'?x.key:null;const k=candidate&&/^(inputs|taxes|tax-overrides|batches|outputs|workspace|reviews)\//.test(candidate)?candidate:null;if(k){if(typeof x.sha256!=='string'||!/^[a-f0-9]{64}$/i.test(x.sha256))throw new Error(`Referenced object missing valid digest: ${k}`);out.push([safeKey(k),x.sha256.toLowerCase()]);}for(const v of Object.values(x))find(v,out);}else for(const v of x)find(v,out);}
  let checked=0;
- for(const key of keys){const bytes=await get(safeKey(key));let json;try{json=JSON.parse(bytes.toString('utf8'));}catch{throw new Error('Referenced state JSON cannot be decoded');}const refs=[];find(json,refs);for(const [k,expected] of refs){if(sha(await get(k))!==expected)throw new Error(`Referenced object digest mismatch: ${k}`);checked++;}}
+ for(const key of keys){const bytes=await get(safeKey(key));let json;try{json=JSON.parse(bytes.toString('utf8'));}catch{throw new Error('Referenced state JSON cannot be decoded');}const refs=[];find(json,refs);const unique=new Map(refs);for(const [k,expected] of unique){if(sha(await get(k))!==expected)throw new Error(`Referenced object digest mismatch: ${k}`);checked++;}}
  return {stateObjects:keys.length,checks:checked};
 }
 async function makeManifest(dir){const files=['ledger.sqlite',...(await listFiles(path.join(dir,'objects'))).map(x=>`objects/${x}`)];const entries=[];for(const rel of files){const file=within(dir,rel);const stat=await lstat(file);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('Invalid backup file');const bytes=await readFile(file);entries.push({path:rel,size:bytes.length,sha256:sha(bytes)});}return {version:1,createdAt:new Date().toISOString(),files:entries};}

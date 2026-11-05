@@ -2,10 +2,27 @@ import { getAppUser } from '../../lib/app-auth';
 import { stateSummary,importSource,importTax,importTaxOverrides,simulate,prepareBatch,finalize,getBatch,getReviews } from '../../lib/workflow';
 import {hasTrustedOrigin,requestAddress} from '../../lib/request-security';
 import type { DepartmentAssignment } from '../../lib/allocation';
+import {lstat,readFile} from 'node:fs/promises';
+import {timingSafeEqual} from 'node:crypto';
+import path from 'node:path';
 
 function assignments(value: unknown): DepartmentAssignment[] {
   if (!Array.isArray(value) || value.length > 30000) throw new Error('部门归属格式无效，请重新试算。');
   return value as DepartmentAssignment[]; // Allocation validates every identity and candidate against the current snapshot.
+}
+async function hasCommitAuthorization(request:Request):Promise<boolean>{
+  const pathname=process.env.ALLOCATION_COMMIT_TOKEN_FILE;
+  const provided=request.headers.get('x-allocation-commit-token')?.trim()??'';
+  if(!pathname||!path.isAbsolute(pathname)||!/^[a-f0-9]{64,}$/i.test(provided))return false;
+  try{
+    const info=await lstat(pathname);
+    if(!info.isFile()||info.isSymbolicLink()||info.size>1024
+      ||(process.platform!=='win32'&&((info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid()))))return false;
+    const expected=(await readFile(pathname,'utf8')).trim();
+    return /^[a-f0-9]{64,}$/i.test(expected)
+      &&provided.length===expected.length
+      &&timingSafeEqual(Buffer.from(provided),Buffer.from(expected));
+  }catch{return false;}
 }
 export const dynamic='force-dynamic';
 export async function GET(request:Request){if(!requestAddress(request))return Response.json({error:'请求地址不受信任。'},{status:403});const user=await getAppUser();if(!user)return Response.json({error:'请先登录。'},{status:401});if(user.mustChangePassword)return Response.json({error:'请先修改初始密码。'},{status:403});try{return Response.json({...(await stateSummary()),user:{name:user.displayName,email:user.email,role:user.role}},{headers:{'Cache-Control':'no-store'}});}catch(e){return Response.json({error:e instanceof Error?e.message:'读取失败'},{status:500});}}
@@ -18,5 +35,5 @@ export async function POST(request:Request){const user=await getAppUser();if(!us
     else throw new Error('不支持此操作。');return Response.json(result);
   }
   if(!ct.toLowerCase().startsWith('application/json'))return Response.json({error:'请求格式无效。'},{status:415});const b=await request.json() as Record<string,unknown>;if(b.action==='simulate'){if(typeof b.version!=='number'||!Number.isSafeInteger(b.version)||b.version<0)throw new Error('余额版本无效，请刷新后重新试算。');return Response.json(await simulate(String(b.product??''),String(b.price??''),Number(b.quantity),b.version,assignments(b.assignments??[])));}
-  if(b.action==='commit'){if(user.role==='viewer')return Response.json({error:'查看账号不能修改数据。'},{status:403});return Response.json(await finalize(String(b.id),user.userId));}if(b.action==='batch'){const batch=await getBatch(String(b.id));if(!batch)throw new Error('批次不存在。');return Response.json({...batch,reviews:await getReviews(String(b.id))});}throw new Error('不支持此操作。');
+  if(b.action==='commit'){if(user.role==='viewer')return Response.json({error:'查看账号不能修改数据。'},{status:403});if(!await hasCommitAuthorization(request))return Response.json({error:'需要独立入账控制凭据。'},{status:403});return Response.json(await finalize(String(b.id),user.userId));}if(b.action==='batch'){const batch=await getBatch(String(b.id));if(!batch)throw new Error('批次不存在。');return Response.json({...batch,reviews:await getReviews(String(b.id))});}throw new Error('不支持此操作。');
   }catch(e){if(e && typeof e==='object' && 'code' in e && e.code==='AMBIGUOUS_ASSIGNMENT' && 'ambiguities' in e && Array.isArray(e.ambiguities))return Response.json({error:e instanceof Error?e.message:'部门归属待确认',code:'AMBIGUOUS_ASSIGNMENT',ambiguities:e.ambiguities},{status:400});return Response.json({error:e instanceof Error?e.message:'处理失败，请核实资料。'},{status:400});}}

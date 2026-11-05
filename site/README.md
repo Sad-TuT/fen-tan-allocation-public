@@ -6,8 +6,8 @@
 
 1. 使用网站账号登录，按优先级逐份导入金额来源，核对历史商品与余额；再上传税务主体表。
 2. 输入商品名称、单价和数量并试算；若空部门记录可归入多个互不兼容组，逐条确认归属。上传开票模板并生成待核验文件。此时不扣减余额。
-3. 通过受控的 Codex 工作流取得冻结资料，由两个独立 agent 分别复核并提交报告。网站本身不会自动启动 agent，不能由浏览器按钮代替核验。
-4. 两份有效报告通过后，由使用者确认正式入账。每个批次提供开票单、各来源标红表和剩余表、核对记录；新批次从更新后的余额继续。
+3. 通过受控的 Codex 工作流取得冻结资料，由两个独立 agent 分别复核并提交报告。MCP 核验包和网站下载包都不返回预设财务答案或其他复核者报告，只返回当前凭据自己的提交状态；网站本身不会自动启动 agent，不能由浏览器按钮代替核验。
+4. 两份有效报告通过后，由使用者输入独立入账控制口令确认正式入账。口令不保存在浏览器；每个批次提供开票单、各来源标红表和剩余表、核对记录，新批次从更新后的余额继续。
 
 ## Skill 与网站账簿同步
 
@@ -43,9 +43,9 @@
 - Node.js 需支持 `node:sqlite`，建议使用 22.21 或更新的受支持版本。安装依赖：`npm ci`。
 - `npm test` 运行分摊、开票、权限和账簿同步测试；`npm run test:ai` 运行 AI 兼容测试。`npm run build:server` 构建 Node/Next.js 服务，`npm run start:server` 以本机地址启动服务。
 - 设置 `ALLOCATION_DATA_DIR` 为应用目录以外的绝对路径；程序会在其中建立 SQLite 数据库和对象文件。管理员账号须在服务器本机使用 `scripts/initialize-owner.mjs` 初始化；脚本从标准输入读取账号信息，不要把账号密码写入命令历史或仓库。
-- 登录限流密钥通过 `ALLOCATION_RATE_KEY_FILE` 指向的受限文件提供；独立复核通道使用 `ALLOCATION_REVIEW_TOKEN_FILE`，Skill 账簿同步使用 `ALLOCATION_SYNC_TOKEN_FILE`。文件应归运行账号所有，使用足够随机的十六进制值，且不能进入 Git 仓库。生产环境可参考 `scripts/server-pm2.config.cjs`。
+- 登录限流密钥通过 `ALLOCATION_RATE_KEY_FILE` 指向的受限文件提供；两名复核者必须分别使用 `ALLOCATION_REVIEWER_A_TOKEN_FILE` 和 `ALLOCATION_REVIEWER_B_TOKEN_FILE`，正式入账控制使用独立的 `ALLOCATION_COMMIT_TOKEN_FILE`，Skill 账簿同步使用 `ALLOCATION_SYNC_TOKEN_FILE`。网页入账按钮会临时要求输入入账控制口令，MCP 入账也必须使用独立入账控制凭据；普通登录账号和复核凭据都不能越过该门禁。报告中的 `reviewerId` 必须分别写成 `codex-reviewer-a` 和 `codex-reviewer-b`，后端会把自报身份与本次凭据身份绑定，并拒绝同一凭据提交两份报告。文件应归运行账号所有，使用足够随机的十六进制值，且不能进入 Git 仓库。生产环境可参考 `scripts/server-pm2.config.cjs`。
 - DeepSeek 功能可选配置 `DEEPSEEK_API_KEY` 或 `DEEPSEEK_API_KEY_FILE`；也可在数据目录的 `secrets/deepseek-key` 放置受限密钥文件。调用 AI 时，相关描述、账簿摘要或批次数据会发送给服务提供方；AI 结果仅供参考，不能替代双重独立核验。
 - 通过 HTTPS 对外服务时，设置 `ALLOCATION_PUBLIC_ORIGIN` 为正确的 HTTPS 源，并由可信反向代理验证主机名、覆盖转发头和配置证书；Node 服务继续仅监听本机。
-- `scripts/allocation-backup.mjs` 可按环境变量指定的数据和备份目录创建备份，并检查恢复流程。备份必须与源码和凭据分开保护。
+- `scripts/allocation-backup.mjs` 可按环境变量指定的数据和备份目录创建备份，并检查 SQLite/对象引用及恢复流程。`scripts/scheduled-maintenance.sh` 会先做数据库与对象备份，再拉取最新网站账簿 Excel 快照；生产环境可按当天分摊节奏安排定时执行。备份必须与源码和凭据分开保护。
 
 本仓库仅提供代码和合成测试，不提供账号、密钥、客户数据或历史账簿。旧规则下创建的待入账批次必须重新试算并双重核验。Skill 附带的旧版单来源脚本不支持本规则，不能用于替代网站的新规则核验。

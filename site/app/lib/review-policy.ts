@@ -1,6 +1,6 @@
 export const CORE_REVIEW_CHECKS = [
   "EXACT_TOTAL", "QUANTITY", "GROUPING", "REMAINDER", "SOURCE_BALANCE",
-  "ROW_SPLITS", "TOP_LEDGER", "FINAL_FILES",
+  "ROW_SPLITS", "TOP_LEDGER", "FIRST_SOURCE_OPTIMUM", "TAX_SCOPE", "FINAL_FILES",
 ] as const;
 
 export type FinancialResults = {
@@ -165,12 +165,16 @@ export function assertTwoIndependentReviews(expectation: ReviewExpectation, valu
   if (!Array.isArray(values) || values.length !== 2) {
     return fail("TWO_REVIEWS_REQUIRED", "必须保存两名独立agent的完整核验报告后才能入账。");
   }
+  const submittedBy = values.map((value) => nonempty(record(value, "核验报告").submittedBy, "复核凭据身份"));
   const reports = values.map((value) => validateReviewReport(expectation, value));
   if (reports.some((report) => report.status !== "passed")) {
     return fail("REVIEW_FAILED", "存在未通过的核验报告，请先处理问题。");
   }
-  if (reports[0].reviewerId === reports[1].reviewerId || reports[0].reviewerRunId === reports[1].reviewerRunId) {
+  if (submittedBy[0] === submittedBy[1] || reports[0].reviewerId === reports[1].reviewerId || reports[0].reviewerRunId === reports[1].reviewerRunId) {
     return fail("REVIEWERS_NOT_INDEPENDENT", "必须是两名不同agent、两次独立执行的核验结果。");
+  }
+  if (reports.some((report, index) => report.reviewerId !== submittedBy[index])) {
+    return fail("REVIEW_IDENTITY_MISMATCH", "复核报告声明的agent身份与提交凭据身份不一致。");
   }
   if (stableJSONString(reports[0].financials) !== stableJSONString(reports[1].financials)) {
     return fail("REVIEW_DISAGREEMENT", "两名agent的独立核算结果不一致。");

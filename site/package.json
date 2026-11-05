@@ -14,7 +14,7 @@
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts tests/backup.test.mjs",
     "test:ai": "node --experimental-strip-types --test tests/ai-compat.test.mjs",
     "ledger:pull": "node scripts/ledger-sync.mjs"
   },
@@ -30,7 +30,7 @@
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^1.31.0",
-    "next": "16.3.4",
+    "next": "16.4.5",
     "next-themes": "^0.4.6",
     "radix-ui": "^1.6.7",
     "react": "19.2.6",
@@ -42,7 +42,7 @@
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
     "vaul": "^1.1.2",
-    "zod": "^3.25.76",
+    "zod": "4.6.7",
     "exceljs": "4.4.0",
     "jszip": "3.10.1"
   },
@@ -57,7 +57,7 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "16.4.5",
     "json-rpc-2.0": "1.7.1",
     "raw-body": "3.0.2",
     "react-server-dom-webpack": "19.2.6",
@@ -71,7 +71,8 @@
   "type": "module",
   "overrides": {
     "miniflare": {
-      "sharp": "0.35.4"
-    }
+      "sharp": "0.35.5"
+    },
+    "uuid": "11.1.1"
   }
 }
