@@ -33,7 +33,7 @@ async function stage(id:string,version:number,snapshotSource:any,legacy=false){
   return batch;
 }
 
-test('old-rule batch remains blocked with two reviews; new compatible batch posts exactly once',async()=>{
+test('old-rule batch remains blocked with two reviews; new independent-blank batch posts exactly once',async()=>{
   const state={sources:[source],taxes:[],productHistory:[]};await persistence.saveWorkspace(0,state,'test');
   const legacy=structuredClone(source);delete legacy.allowBlankDepartment;
   await stage('legacy',1,legacy,true);

@@ -104,7 +104,7 @@ export interface AllocationExclusion {
   reason: string;
 }
 
-export const ALLOCATION_RULE_VERSION = "department-compat-v3" as const;
+export const ALLOCATION_RULE_VERSION = "department-exact-v4" as const;
 
 export interface AllocationPlan {
   ruleVersion: typeof ALLOCATION_RULE_VERSION;
@@ -130,7 +130,7 @@ export interface AllocationPlan {
     primaryValueCents: number;
     secondaryObjective: "minimize_group_count";
     secondaryValue: number;
-    conditionalOnConfirmedDepartmentAssignments: true;
+    blankDepartmentIndependent: true;
     activeGroups: number;
     dpCells: number;
   };
@@ -233,9 +233,6 @@ function requiredKey(row: SourceRow): string {
   return JSON.stringify([row.applicant, row.costCenter, normalizeLegalEntity(row.legalEntity).key, row.purpose]);
 }
 function departmentValue(s: string): string { return nonempty(s) ? s : ""; }
-function compatible(a: SourceRow, b: SourceRow): boolean {
-  return (["department", "useCenter"] as const).every(field => !departmentValue(a[field]) || !departmentValue(b[field]) || a[field] === b[field]);
-}
 
 interface InternalGroup {
   key: string;
@@ -247,19 +244,12 @@ interface InternalGroup {
 }
 
 function inspectSources(sources: Source[], maxRows: number, assignments: DepartmentAssignment[] = []) {
-  if (!Array.isArray(assignments) || assignments.length > maxRows) fail("部门归属确认格式或数量无效。");
-  const requested = new Map<string, DepartmentAssignment>();
-  for (const a of assignments) {
-    if (!a || typeof a !== 'object' || !nonempty(a.sourceId) || !nonempty(a.rowId) || typeof a.department !== 'string' || typeof a.useCenter !== 'string') fail("部门归属确认格式无效。");
-    const id=JSON.stringify([a.sourceId,a.rowId]);
-    if (requested.has(id)) fail("同一来源行的部门归属不能重复确认。");
-    requested.set(id,a);
-  }
-  const effectiveAssignments = new Map<string, DepartmentAssignment>();
+  if (!Array.isArray(assignments)) fail("部门补填数据格式无效。");
+  if (assignments.length) fail("当前规则禁止补填部门；申领部门或使用中心为空时，该来源行必须独立计算。");
   if (!Array.isArray(sources) || !sources.length) fail("请先导入至少一个金额来源。");
   const ordered = sources.map((s, index) => ({ s, index })).sort((a, b) => a.s.priority - b.s.priority || a.index - b.index).map(x => x.s);
   const sourceIds = new Set<string>();
-  const eligibleByRequiredKey = new Map<string, SourceRow[]>();
+  const eligibleRows: SourceRow[] = [];
   const exclusions: AllocationExclusion[] = [];
   const before = new Map<string, number>();
   const previous = new Map<string, number>();
@@ -315,89 +305,39 @@ function inspectSources(sources: Source[], maxRows: number, assignments: Departm
       const missing: string[] = REQUIRED_FIELDS.filter(field => !nonempty(row[field]));
       if (missing.length) { exclude(`缺少必填信息：${missing.map(field => (FIELD_NAMES as Record<string, string>)[field] || "申领部门").join("、")}。`); continue; }
       if (!row.amountCents) { exclude("金额为0，不参与本批分摊。"); continue; }
-      const key = requiredKey(row);
-      const rows = eligibleByRequiredKey.get(key) ?? [];
-      rows.push(row); eligibleByRequiredKey.set(key, rows);
+      eligibleRows.push(row);
     }
     if (historicalRed > previousUsed) throw new AllocationError("LEDGER_MISMATCH", `来源${source.name}的历史红字金额大于已登记历史用额，请先核实历史记录。`);
     if (add(available, previousUsed) !== source.originalCents) throw new AllocationError("LEDGER_MISMATCH", `来源${source.name}对账不平：原总额不等于当前可用明细加历史累计已用。请先核实，不能倒算或改写基准。`);
     before.set(source.id, available);
   }
   const allGroups: InternalGroup[] = [];
-  const ambiguities: DepartmentAmbiguity[] = [];
-  let compatibilityChecks=0;
-  for (const rows of eligibleByRequiredKey.values()) {
-    compatibilityChecks += rows.length * rows.length;
-    if(!Number.isSafeInteger(compatibilityChecks)||compatibilityChecks>2_000_000)throw new AllocationError('LIMIT_EXCEEDED','部门兼容检查超过已验证规模，尚未判定是否可分摊。');
-    // A/blank/B creates a non-transitive match. Refuse to assign the blank
-    // row silently when it can match two mutually incompatible alternatives.
-    const effectiveRows: SourceRow[] = [];
-    for (const row of rows) {
-      const alternatives = rows.filter(other => compatible(row, other));
-      const options = (["department", "useCenter"] as const).map(field => {
-        const own=departmentValue(row[field]);if(own)return [own];
-        const values=[...new Set(alternatives.map(r=>departmentValue(r[field])).filter(Boolean))];
-        return ['',...values];
-      });
-      const candidates:{department:string;useCenter:string}[]=[];
-      if(options[0].length*options[1].length>1000)throw new AllocationError('LIMIT_EXCEEDED','部门候选数量超过已验证规模，尚未判定是否可分摊。');
-      for(const department of options[0])for(const useCenter of options[1]){
-        const proposed={...row,department,useCenter};const matching=alternatives.filter(r=>compatible(proposed,r));
-        if(department&&!matching.some(r=>departmentValue(r.department)===department))continue;
-        if(useCenter&&!matching.some(r=>departmentValue(r.useCenter)===useCenter))continue;
-        candidates.push({department,useCenter});
-      }
-      // A partially blank candidate remains viable when every attempt to
-      // fill it would conflict in the other department dimension. Remove
-      // only candidates strictly subsumed by a compatible, more specific one.
-      const maximal=candidates.filter(c=>!candidates.some(other=>other!==c&&
-        (!c.department||c.department===other.department)&&(!c.useCenter||c.useCenter===other.useCenter)&&
-        ((!c.department&&!!other.department)||(!c.useCenter&&!!other.useCenter))));
-      const id=JSON.stringify([row.sourceId,row.id]), chosen=requested.get(id) ?? row.departmentResolution;
-      if(chosen){
-        if((departmentValue(row.department)&&chosen.department&&chosen.department!==row.department)
-          ||(departmentValue(row.useCenter)&&chosen.useCenter&&chosen.useCenter!==row.useCenter)){
-          fail(`来源${row.originalFile}第${row.originalRow}行的部门归属不能覆盖已有非空原值，请重新选择。`);
-        }
-        // A saved assignment may confirm only one department dimension and
-        // leave the other blank for unambiguous inheritance. Treat each blank
-        // as "no additional constraint", but require that the constraints
-        // still select exactly one current maximal candidate.
-        const selected=maximal.filter(c=>(!chosen.department||c.department===chosen.department)
-          &&(!chosen.useCenter||c.useCenter===chosen.useCenter));
-        if(selected.length!==1) fail(selected.length
-          ? `来源${row.originalFile}第${row.originalRow}行保存的部门归属不能唯一确定，请重新选择。`
-          : `来源${row.originalFile}第${row.originalRow}行的归属不属于当前合法候选，请重新选择。`);
-        requested.delete(id);effectiveRows.push({...row,department:chosen.department,useCenter:chosen.useCenter});
-        effectiveAssignments.set(id,{sourceId:row.sourceId,rowId:row.id,department:chosen.department,useCenter:chosen.useCenter});
-      } else if(maximal.length>1){
-        ambiguities.push({sourceId:row.sourceId,rowId:row.id,originalFile:row.originalFile,originalRow:row.originalRow,amountCents:row.amountCents,applicant:row.applicant,costCenter:row.costCenter,legalEntity:row.legalEntity,purpose:row.purpose,department:row.department,useCenter:row.useCenter,candidates:maximal});
-      } else effectiveRows.push(row);
+  const exactGroups = new Map<string, InternalGroup>();
+  for (const row of eligibleRows) {
+    const department = departmentValue(row.department);
+    const useCenter = departmentValue(row.useCenter);
+    const independent = !department || !useCenter;
+    const key = independent
+      ? JSON.stringify(["independent-blank", row.sourceId, row.id])
+      : rowKey(row);
+    let group = exactGroups.get(key);
+    if (!group) {
+      group = {
+        key,
+        row: { ...row, department, useCenter },
+        legal: normalizeLegalEntity(row.legalEntity),
+        rows: [],
+        amount: 0,
+        first: 0,
+      };
+      exactGroups.set(key, group);
+      allGroups.push(group);
     }
-    if(ambiguities.length)continue;
-    const components: InternalGroup[] = [];
-    for (const [index,effective] of effectiveRows.entries()) {
-      const row=rows[index];
-      let group = components.find(g => compatible(g.row, effective));
-      if (!group) {
-        const displayRow = { ...effective, department: departmentValue(effective.department), useCenter: departmentValue(effective.useCenter) };
-        group = { key: '', row: displayRow, legal: normalizeLegalEntity(row.legalEntity), rows: [], amount: 0, first: 0 };
-        components.push(group);
-      }
-      if (!group.row.department && departmentValue(effective.department)) group.row.department = effective.department;
-      if (!group.row.useCenter && departmentValue(effective.useCenter)) group.row.useCenter = effective.useCenter;
-      group.rows.push(row);
-      group.amount = add(group.amount, row.amountCents);
-      if (row.sourceId === ordered[0].id) group.first = add(group.first, row.amountCents);
-    }
-    for (const group of components) {
-      for(const field of ['department','useCenter'] as const) if(group.row[field]&&!group.rows.some(r=>departmentValue(r[field])===group.row[field])) fail(`部门归属选项没有相应来源记录，请重新选择。`);
-      group.key = rowKey(group.row); allGroups.push(group);
-    }
+    group.rows.push(row);
+    group.amount = add(group.amount, row.amountCents);
+    if (row.sourceId === ordered[0].id) group.first = add(group.first, row.amountCents);
   }
-  if(ambiguities.length){const e=new AllocationError('AMBIGUOUS_ASSIGNMENT','部分空部门记录可归入多个不同部门组，请逐行确认归属。');e.ambiguities=ambiguities;throw e;}
-  if(requested.size)fail('部门归属确认包含未知、失效或未使用的来源行，请刷新重试。');
-  return { ordered, allGroups, exclusions, before, previous, effectiveAssignments:[...effectiveAssignments.values()] };
+  return { ordered, allGroups, exclusions, before, previous, effectiveAssignments: [] as DepartmentAssignment[] };
 }
 
 interface Options { min: number; max: number; step: number; full: number | null }
@@ -545,7 +485,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
   if (missingCount) warnings.push(`${missingCount}条来源记录缺少必填信息，已排除本批分摊并完整保留余额。`);
   if (allGroups.some(g => !g.legal.recognized)) warnings.push("部分法律主体无法唯一识别公司代码，仅按原文精确匹配；开票资料需单独核实。");
   if (new Set(ordered.map(s => s.priority)).size !== ordered.length) warnings.push("有来源使用相同优先级，已按导入顺序稳定排列，请确认此顺序符合预期。");
-  return { ruleVersion: ALLOCATION_RULE_VERSION, departmentAssignments: inspected.effectiveAssignments, groupMembership:allGroups.map(g=>({key:g.key,rows:g.rows.map(r=>({sourceId:r.sourceId,rowId:r.id,amountCents:r.amountCents}))})), status: "solved", priceCents, quantity, totalCents, availableCents, eligibleCents, usedCents: totalCents, remainingCents: availableCents - totalCents, groups, sourceUses, sourceSummaries, warnings, exclusions, proof: { method: "exact_dynamic_programming", exact: true, primaryObjective: "maximize_first_source_contribution", primaryValueCents: prevFirst[quantity], secondaryObjective: "minimize_group_count", secondaryValue: prevCount[quantity], conditionalOnConfirmedDepartmentAssignments:true, activeGroups: active.length, dpCells } };
+  return { ruleVersion: ALLOCATION_RULE_VERSION, departmentAssignments: inspected.effectiveAssignments, groupMembership:allGroups.map(g=>({key:g.key,rows:g.rows.map(r=>({sourceId:r.sourceId,rowId:r.id,amountCents:r.amountCents}))})), status: "solved", priceCents, quantity, totalCents, availableCents, eligibleCents, usedCents: totalCents, remainingCents: availableCents - totalCents, groups, sourceUses, sourceSummaries, warnings, exclusions, proof: { method: "exact_dynamic_programming", exact: true, primaryObjective: "maximize_first_source_contribution", primaryValueCents: prevFirst[quantity], secondaryObjective: "minimize_group_count", secondaryValue: prevCount[quantity], blankDepartmentIndependent:true, activeGroups: active.length, dpCells } };
 }
 
 export interface AllocationValidation {
@@ -586,6 +526,9 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
       const first=originals[0];
       check(originals.every(row=>requiredKey(row)===requiredKey(first)),"同组申领人、成本中心、主体或用途不一致。");
       for(const field of ['department','useCenter'] as const)check(new Set(originals.map(row=>departmentValue(row[field])).filter(Boolean)).size<=1,`同组${field}存在冲突的非空值。`);
+      const hasBlankDepartment = originals.some(row => !departmentValue(row.department) || !departmentValue(row.useCenter));
+      check(!hasBlankDepartment || originals.length === 1, "申领部门或使用中心为空时，该来源行必须独立成组。");
+      check(hasBlankDepartment || originals.every(row => row.department === first.department && row.useCenter === first.useCenter), "申领部门和使用中心必须完整且逐字一致后才能合并。");
     }
     check(assignedRows.size===originalRows.size,"不是每一条可参与来源行都被唯一归组。");
     const available = sum([...before.values()]);
@@ -602,8 +545,9 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
       for (const field of ["department", "useCenter"] as const) {
         const unique = new Set(raw.rows.map(row => departmentValue(row[field])).filter(Boolean));
         check(unique.size <= 1, `同组${field}存在不同非空值。`);
-        check(group[field] === (unique.values().next().value ?? ""), `开票${field}不是唯一非空值。`);
+        check(group[field] === (unique.values().next().value ?? ""), `开票${field}与来源原值不一致。`);
       }
+      check(!raw.rows.some(row => !departmentValue(row.department) || !departmentValue(row.useCenter)) || raw.rows.length === 1, "空白部门记录只能独立计算。");
       check(!selectedKeys.has(group.key), "同一分组被重复列入。");
       selectedKeys.add(group.key);
       check(Number.isSafeInteger(group.quantity) && group.quantity > 0, "分组数量不是正整数。");
@@ -656,7 +600,7 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
     const expectedOrder = stableEntityBlocks(allGroups.filter(g => selectedKeys.has(g.key)).map(g => ({ key: g.key, normalizedLegalEntity: g.legal }))).map(g => g.key);
     check(JSON.stringify(plan.groups.map(g => g.key)) === JSON.stringify(expectedOrder), "同一法律主体未稳定连续列示。");
     check(plan.proof.primaryValueCents === perSource.get(ordered[0].id) && plan.proof.secondaryValue === plan.groups.length, "求解证明中的目标值与实际金额不一致。");
-    check(plan.proof.conditionalOnConfirmedDepartmentAssignments === true,"归属确认条件未绑定最优性说明。");
+    check(plan.proof.blankDepartmentIndependent === true,"空白部门独立分组规则未绑定最优性说明。");
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }

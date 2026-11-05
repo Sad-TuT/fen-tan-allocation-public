@@ -7,14 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { AllocationPlan, DepartmentAssignment } from "./lib/allocation";
+import type { AllocationPlan } from "./lib/allocation";
 
 type Draft = { product: string; price: string; quantity: number };
 type AgentSimulation = {
   version: number;
   product: string;
   priceCents: number;
-  assignments: DepartmentAssignment[];
   plan: AllocationPlan;
 };
 type DraftResult = { draft: Draft; note: string; plan: { groups: number; totalCents: number; quantity: number } | null; warning: string | null; simulation: AgentSimulation | null };
@@ -74,7 +73,7 @@ export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disa
     </form>
     {error && <p className="ai-error"><CircleAlert size={15} />{error.replace(/[。！？]+$/, "")}。你仍可在下方手动填写，不影响继续处理。</p>}
     {result && <div className="ai-result">
-      <div className="ai-result-title"><Badge className="status-blue">{result.simulation ? "方案已通过试算" : "参数已识别"}</Badge><span>{result.simulation ? "DeepSeek 规划完成，请核对精确结果" : "请核对后补充或确认部门归属"}</span></div>
+      <div className="ai-result-title"><Badge className="status-blue">{result.simulation ? "方案已通过试算" : "参数已识别"}</Badge><span>{result.simulation ? "DeepSeek 规划完成，请核对精确结果" : "请核对参数后重新试算"}</span></div>
       <div className="ai-fields">
         <div><span>商品名称</span><strong>{result.draft.product}</strong></div>
         <div><span>单价</span><strong className="numeric">{money(Number(result.draft.price) * 100)}</strong></div>

@@ -1,6 +1,6 @@
 interface:
   display_name: "费用分摊与开票"
-  short_description: "按已确认的分组、部门兼容和唯一账簿规则精确分摊费用，补全开票明细并生成标红及剩余金额表"
+  short_description: "按已确认的分组、部门完整一致或空白行独立规则精确分摊费用，补全开票明细并生成标红及剩余金额表"
   default_prompt: "使用 $invoice-cost-allocation，先同步网站唯一账簿快照，再按已确认规则和固定第一来源优先目标完成精确分摊、开票明细、双重核验、标红及剩余表。"
 policy:
   allow_implicit_invocation: true

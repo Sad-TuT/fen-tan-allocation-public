@@ -30,7 +30,6 @@ export type NextActionInput = {
 export type DraftProgressInput = {
   hasSources: boolean;
   parametersReady: boolean;
-  hasAmbiguities: boolean;
   hasSimulation: boolean;
   hasTemplate: boolean;
 };
@@ -96,19 +95,13 @@ export function deriveNextAction(input: NextActionInput): NextAction {
   };
 }
 
-/**
- * Maps the draft form to the first three steps of the allocation journey.
- * Department ambiguity is an explicit stage because it needs user input.
- */
+/** Maps the draft form to the first three steps of the allocation journey. */
 export function deriveDraftProgress(input: DraftProgressInput): DraftProgress {
   if (!input.hasSources) {
     return { stage: 1, nextLabel: "先导入金额来源", canGenerate: false };
   }
   if (!input.parametersReady) {
     return { stage: 1, nextLabel: "填写商品参数", canGenerate: false };
-  }
-  if (input.hasAmbiguities) {
-    return { stage: 2, nextLabel: "确认部门归属", canGenerate: false };
   }
   if (!input.hasSimulation) {
     return { stage: 2, nextLabel: "开始精确试算", canGenerate: false };

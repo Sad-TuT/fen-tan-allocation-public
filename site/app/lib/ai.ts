@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cents } from './spreadsheets';
 import { getBatch, simulate, stateSummary } from './workflow';
-import type { AllocationPlan, DepartmentAssignment } from './allocation';
+import type { AllocationPlan } from './allocation';
 
 // The Key stays on the server: the browser only ever talks to /api/ai.
 const API_BASE = (process.env.DEEPSEEK_API_BASE || 'https://api.deepseek.com').trim();
@@ -109,7 +109,6 @@ export type AiSimulation = {
   plan: AllocationPlan;
   product: string;
   priceCents: number;
-  assignments: DepartmentAssignment[];
 };
 export type AiDraftResult = {
   draft: AiDraft;
@@ -177,11 +176,9 @@ export async function aiParseDraft(input: string, userId: string): Promise<AiDra
     plan = { groups: result.plan.groups.length, totalCents: result.plan.totalCents, quantity: result.plan.quantity };
     // Model output is limited to the three product parameters above. The
     // financial plan below comes only from the trusted integer-cent solver.
-    simulation = { ...result, assignments: [] };
+    simulation = result;
   } catch (error) {
-    warning = error && typeof error === 'object' && 'code' in error && error.code === 'AMBIGUOUS_ASSIGNMENT'
-      ? '部分空部门记录有多个归属，请将商品信息填入表单，在试算中确认部门归属。'
-      : error instanceof Error ? error.message : '试算未通过。';
+    warning = error instanceof Error ? error.message : '试算未通过。';
   }
   return { draft: { product, price, quantity }, note: text(data.note, 200), plan, warning, simulation };
 }

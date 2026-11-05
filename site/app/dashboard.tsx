@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import type { AllocationPlan, AllocationGroup, DepartmentAssignment } from "./lib/allocation";
+import { ALLOCATION_RULE_VERSION, type AllocationPlan, type AllocationGroup } from "./lib/allocation";
 import { deriveDraftProgress, deriveNextAction } from "./lib/workflow-ux";
 import AccountPanel from "./account-panel";
 import { AiDraftAssistant, AiPrecheck, AiAsk } from "./ai-panel";
@@ -25,8 +25,7 @@ type Workspace = { version: number; user: User; sources: Source[]; taxCount: num
 type Review = { reviewerId: string; reviewerRunId: string; status: string; summary?: string; issues: string[]; unverified: string[]; reviewDigest: string };
 type InvoiceRow = AllocationGroup & { targetRow: number; tax: { mode: string; text: string; reason: string } };
 type Batch = { id: string; product: string; status: string; createdAt: string; versionAtCreation: number; reviews?: Review[]; data: { plan: AllocationPlan; invoiceRows: InvoiceRow[]; manifest: { name: string; role: string; sha256: string }[]; taxPending: number; folderName: string; reviewDigest: string } };
-type Simulation = { version: number; plan: AllocationPlan; priceCents: number; product: string; assignments: DepartmentAssignment[] };
-type Ambiguity = { sourceId: string; rowId: string; originalFile: string; originalRow: number; amountCents: number; applicant: string; costCenter: string; legalEntity: string; purpose: string; department: string; useCenter: string; candidates: {department: string; useCenter: string}[] };
+type Simulation = { version: number; plan: AllocationPlan; priceCents: number; product: string };
 type Flash = { kind: "error" | "success"; title: string; message?: string } | null;
 
 const NAV: { id: View; title: string; icon: typeof LayoutDashboard }[] = [
@@ -109,10 +108,6 @@ export default function Dashboard({ user }: { user: User }) {
   const [template, setTemplate] = useState<File | null>(null);
   const [templateKey, setTemplateKey] = useState(0);
   const [simulation, setSimulation] = useState<Simulation | null>(null);
-  const [ambiguities, setAmbiguities] = useState<Ambiguity[]>([]);
-  const [choices, setChoices] = useState<Record<string, string>>({});
-  const [confirmedAssignments, setConfirmedAssignments] = useState<DepartmentAssignment[]>([]);
-  const [assignmentVersion, setAssignmentVersion] = useState<number | null>(null);
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceFileKey, setSourceFileKey] = useState(0);
   const [sourcePriority, setSourcePriority] = useState("1");
@@ -146,12 +141,6 @@ export default function Dashboard({ user }: { user: User }) {
     setSourcePriority(String(Math.max(0, ...workspace.sources.map((source) => source.priority)) + 1));
     setSourceHistory(workspace.productHistory.map((entry) => entry.product).join("／"));
   }, [workspace]);
-  useEffect(() => {
-    if (workspace && assignmentVersion !== null && workspace.version !== assignmentVersion) {
-      setSimulation(null); setAmbiguities([]); setChoices({}); setConfirmedAssignments([]); setAssignmentVersion(null);
-    }
-  }, [workspace, assignmentVersion]);
-
   const sources = workspace?.sources || [];
   const batches = workspace?.batches || [];
   const available = sources.reduce((sum, source) => sum + source.availableCents, 0);
@@ -171,7 +160,6 @@ export default function Dashboard({ user }: { user: User }) {
   const draftProgress = deriveDraftProgress({
     hasSources: sources.length > 0,
     parametersReady: !!product.trim() && !!estimatedTotal,
-    hasAmbiguities: ambiguities.length > 0,
     hasSimulation: !!simulation,
     hasTemplate: !!template,
   });
@@ -182,15 +170,15 @@ export default function Dashboard({ user }: { user: User }) {
   });
   const reports = selectedBatch?.reviews || [];
   const selectedStale = selectedBatch?.status === "awaiting_review" && selectedBatch.versionAtCreation !== workspace?.version;
-  const selectedOldRule = selectedBatch?.status === "awaiting_review" && selectedBatch.data.plan.ruleVersion !== "department-compat-v3";
+  const selectedOldRule = selectedBatch?.status === "awaiting_review" && selectedBatch.data.plan.ruleVersion !== ALLOCATION_RULE_VERSION;
   const passed = reports.filter((report) => report.status === "passed" && !report.issues?.length && !report.unverified?.length && report.reviewDigest === selectedBatch?.data.reviewDigest);
   const canCommit = canWrite && selectedBatch?.status === "awaiting_review" && !selectedStale && !selectedOldRule && reports.length === 2 && passed.length === 2 && passed[0].reviewerId !== passed[1].reviewerId && passed[0].reviewerRunId !== passed[1].reviewerRunId;
 
   useEffect(() => {
-    if (!ambiguities.length && !simulation) return;
-    const target = document.getElementById(ambiguities.length ? "department-assignment-step" : "simulation-step");
+    if (!simulation) return;
+    const target = document.getElementById("simulation-step");
     target?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
-  }, [ambiguities.length, simulation]);
+  }, [simulation]);
 
   function go(next: View) { setView(next); setMobileMenuOpen(false); }
   async function perform(label: string, action: () => Promise<void>) {
@@ -230,39 +218,18 @@ export default function Dashboard({ user }: { user: User }) {
     setBatchOpen(open);
     if (!open) requestAnimationFrame(() => window.scrollTo({ top: batchScrollPosition.current, behavior: "auto" }));
   }
-  const assignmentKey = (sourceId: string, rowId: string) => JSON.stringify([sourceId, rowId]);
-  function clearTrial() { setSimulation(null); setAmbiguities([]); setChoices({}); setConfirmedAssignments([]); setAssignmentVersion(null); }
-  async function runTrial(version: number, nextAssignments: DepartmentAssignment[]) {
-    try {
-      const result = await request({ action: "simulate", product: product.trim(), price, quantity: Number(quantity), version, assignments: nextAssignments });
-      setSimulation({ ...result, assignments: nextAssignments }); setAmbiguities([]); setChoices({}); setConfirmedAssignments(nextAssignments); setAssignmentVersion(version); await refresh();
-      setFlash({ kind: "success", title: "精确试算完成", message: `已找到${result.plan.groups.length}个可行分组。试算尚未扣减余额。` });
-    } catch (error) {
-      if (!(error instanceof RequestError) || error.data?.code !== "AMBIGUOUS_ASSIGNMENT" || !Array.isArray(error.data.ambiguities) || !error.data.ambiguities.length) throw error;
-      setSimulation(null); setConfirmedAssignments(nextAssignments); setAssignmentVersion(version); setChoices({}); setAmbiguities(error.data.ambiguities);
-      setFlash({ kind: "error", title: "需要确认部门归属", message: "请逐项选择兼容的部门组合后继续试算；这些选择不会立即扣减余额。" });
-    }
+  function clearTrial() { setSimulation(null); }
+  async function runTrial(version: number) {
+    const result = await request({ action: "simulate", product: product.trim(), price, quantity: Number(quantity), version });
+    setSimulation(result); await refresh();
+    setFlash({ kind: "success", title: "精确试算完成", message: `已找到${result.plan.groups.length}个可行分组。试算尚未扣减余额。` });
   }
   async function trial(event: FormEvent) {
     event.preventDefault();
     await perform("simulate", async () => {
       if (!canWrite) throw new Error("当前账号仅可查看，不能进行试算。");
       if (!workspace) throw new Error("请先读取当前余额版本。");
-      clearTrial(); await runTrial(workspace.version, []);
-    });
-  }
-  async function resolveAmbiguities() {
-    await perform("simulate", async () => {
-      if (assignmentVersion === null || assignmentVersion !== workspace?.version) { clearTrial(); throw new Error("余额版本已变化，请重新试算并确认归属。"); }
-      const combined = new Map(confirmedAssignments.map(a => [assignmentKey(a.sourceId, a.rowId), a]));
-      for (const item of ambiguities) {
-        const choice = choices[assignmentKey(item.sourceId, item.rowId)];
-        if (choice === undefined || choice === "") throw new Error("请逐项选择归属后继续。");
-        const index = Number(choice); const candidate = item.candidates[index];
-        if (!Number.isSafeInteger(index) || !candidate) throw new Error("部门归属选择无效，请重新试算。");
-        combined.set(assignmentKey(item.sourceId, item.rowId), {sourceId:item.sourceId, rowId:item.rowId, department:candidate.department, useCenter:candidate.useCenter});
-      }
-      await runTrial(assignmentVersion, [...combined.values()]);
+      clearTrial(); await runTrial(workspace.version);
     });
   }
   async function prepare() {
@@ -270,7 +237,7 @@ export default function Dashboard({ user }: { user: User }) {
       if (!canWrite) throw new Error("当前账号仅可查看，不能生成分摊文件。");
       if (!simulation) throw new Error("请先完成本批试算。");
       const body = new FormData(); body.set("action", "prepare"); body.set("version", String(simulation.version)); body.set("file", checkFile(template));
-      body.set("product", simulation.product); body.set("price", price); body.set("quantity", quantity); body.set("assignments", JSON.stringify(simulation.assignments));
+      body.set("product", simulation.product); body.set("price", price); body.set("quantity", quantity);
       const result = await request(body);
       batchScrollPosition.current = 0;
       setView("history");
@@ -389,8 +356,6 @@ export default function Dashboard({ user }: { user: User }) {
                   clearTrial();
                   if (aiSimulation) {
                     setSimulation(aiSimulation);
-                    setConfirmedAssignments(aiSimulation.assignments);
-                    setAssignmentVersion(aiSimulation.version);
                     setFlash({ kind: "success", title: "DeepSeek 方案已通过精确校验", message: `已规划${aiSimulation.plan.groups.length}个分组，上传本批模板后即可生成 Excel。` });
                   } else {
                     requestAnimationFrame(() => document.getElementById("product")?.focus());
@@ -416,15 +381,6 @@ export default function Dashboard({ user }: { user: User }) {
               </CardContent>
             </Card>
           </div>
-          {ambiguities.length > 0 && <Card id="department-assignment-step" className="simulation-card workflow-result-card">
-            <CardHeader>
-              <div className="workflow-result-heading"><span className="workflow-step-number">02</span><div><div className="inline-heading"><CardTitle>确认部门归属</CardTitle><Badge className="status-amber">需要你选择</Badge></div><CardDescription>同一金额行有多个兼容的部门组合。逐项确认后，网站才会继续完成精确试算。</CardDescription></div></div>
-            </CardHeader>
-            <CardContent>
-              <div className="issue-list">{ambiguities.map((item, index) => { const key = assignmentKey(item.sourceId, item.rowId); return <div key={key} className="context-note"><div><p><strong>{item.originalFile} · 第{item.originalRow}行</strong> · {money(item.amountCents)}</p><p>{item.applicant} · {item.costCenter} · {item.legalEntity} · {item.purpose}</p><p>原申领部门：{item.department || "空白"}；原使用中心：{item.useCenter || "空白"}</p><label htmlFor={`department-choice-${index}`}>请选择本行完整金额所属的部门组合</label><select id={`department-choice-${index}`} value={choices[key] ?? ""} disabled={!!busy} onChange={(event) => setChoices(previous => ({...previous, [key]:event.target.value}))}><option value="">请选择，不自动分配</option>{item.candidates.map((candidate, i) => <option key={i} value={String(i)}>申领部门：{candidate.department || "空白"}；使用中心：{candidate.useCenter || "空白"}</option>)}</select></div></div>; })}</div>
-              <Button onClick={resolveAmbiguities} disabled={!!busy || ambiguities.some(item => choices[assignmentKey(item.sourceId,item.rowId)] === undefined || choices[assignmentKey(item.sourceId,item.rowId)] === "")}>{busy === "simulate" ? <><LoaderCircle className="animate-spin" size={16} />正在重新试算…</> : <><ArrowRight size={16} />确认归属并重新试算</>}</Button>
-            </CardContent>
-          </Card>}
           {simulation && <Card id="simulation-step" className="simulation-card workflow-result-card">
             <CardHeader>
               <div className="inline-card-header">
@@ -444,8 +400,8 @@ export default function Dashboard({ user }: { user: User }) {
 
         {view === "sources" && <>
           <div className="section-heading"><h2>当前金额来源<span>{sources.length}</span></h2><Badge variant="outline">余额版本 {workspace?.version ?? "—"}</Badge></div>
-          {sources.length ? <div className="source-card-grid">{sources.map((source) => <Card key={source.id} className="source-card"><CardHeader className="inline-card-header"><div className="source-card-title"><span className="source-order">{String(source.priority).padStart(2, "0")}</span><div><CardTitle>{source.name}</CardTitle><CardDescription>优先级 {source.priority} · {number(source.rowCount)}条剩余记录 · {"允许部门空白（不同非空值不合并）"}</CardDescription></div></div><FileSpreadsheet size={20} className="muted" /></CardHeader><CardContent><div className="source-available"><span>剩余余额</span><strong className="numeric">{money(source.availableCents)}</strong></div><div className="source-progress"><span style={{ width: `${Math.max(0, Math.min(100, source.originalCents ? source.usedCents / source.originalCents * 100 : 0))}%` }} /></div><div className="source-totals"><span>原总额<strong className="numeric">{money(source.originalCents)}</strong></span><span>累计已用<strong className="numeric">{money(source.usedCents)}</strong></span></div><div className="source-file"><FileSpreadsheet size={14} /><span title={source.fileName}>{source.fileName}</span></div><Button variant="outline" className="full-width" onClick={() => setSelectedSource(source)}>查看历批使用记录<ChevronRight size={14} /></Button></CardContent></Card>)}</div> : <Card className="empty-source-card"><Empty icon={WalletCards} title="从导入第一份金额表开始" description="上传剩余余额表，系统将识别原额、剩余额和顶部历史使用登记。" /></Card>}
-          <Card className="import-card"><CardHeader><CardTitle>导入新的金额来源</CardTitle><CardDescription>追加独立来源，保留来源顺序。网站是唯一余额账簿，本地 Excel 只能作为版本快照；请勿将同一来源的原表与剩余表重复加入。</CardDescription></CardHeader><CardContent><form onSubmit={uploadSource} className="form-stack"><div className="import-fields"><div className="field"><Label htmlFor="source-file">金额来源文件</Label><Input key={sourceFileKey} id="source-file" disabled={!!busy || !canWrite} type="file" accept=".xlsx" required onChange={(event) => setSourceFile(event.target.files?.[0] || null)} /><p className="field-note">支持.xlsx，最大10MB。请使用未用余额明细表。</p></div><div className="field priority-field"><Label htmlFor="source-priority">使用优先级</Label><Input id="source-priority" disabled={!!busy || !canWrite} type="number" min={1} step={1} required value={sourcePriority} onChange={(event) => setSourcePriority(event.target.value)} /></div></div><div className="field"><Label htmlFor="source-history">截至当前已扣除的商品</Label><Input id="source-history" placeholder="例如：商品甲／商品乙／商品丙" value={sourceHistory} onChange={(event) => setSourceHistory(event.target.value)} disabled={!!busy || !canWrite || !!workspace?.productHistory.length} /><p className="field-note">按批次顺序填写，用“／”分隔。表中已有历史用额时必须填写；建立后沿用已确认清单。</p></div>{sources.length > 0 && <div className="field"><Label htmlFor="source-reference">独立来源编号</Label><Input id="source-reference" placeholder="填写财务凭证号、来源表编号或其他唯一编号" value={sourceReference} maxLength={120} disabled={!!busy || !canWrite} required onChange={(event) => setSourceReference(event.target.value)} /><p className="field-note">已有账簿追加来源时必填，不能与现有来源重复。网站会保存确认人和确认时间。</p></div>}<p className="field-note">申领部门和使用中心可为空；具体归属按本批分组规则核对。</p><label className="confirm-line"><input type="checkbox" disabled={!!busy || !canWrite} checked={sourceConfirmed} onChange={(event) => setSourceConfirmed(event.target.checked)} required /><span>我已确认此来源与已导入金额不重复，历史商品清单及顺序正确。</span></label>{pendingCount > 0 && <p className="inline-warning"><CircleAlert size={15} />导入会更新余额版本，现有未入账批次需要重新试算。</p>}<div className="form-actions"><Button type="submit" disabled={!workspace || !sourceFile || !sourceConfirmed || (sources.length > 0 && !sourceReference.trim()) || !!busy || !canWrite}>{busy === "source" ? <LoaderCircle size={16} className="animate-spin" /> : <Upload size={16} />}{busy === "source" ? "正在核对并导入…" : "确认并导入来源"}</Button></div></form></CardContent></Card>
+          {sources.length ? <div className="source-card-grid">{sources.map((source) => <Card key={source.id} className="source-card"><CardHeader className="inline-card-header"><div className="source-card-title"><span className="source-order">{String(source.priority).padStart(2, "0")}</span><div><CardTitle>{source.name}</CardTitle><CardDescription>优先级 {source.priority} · {number(source.rowCount)}条剩余记录 · 空部门行独立计算</CardDescription></div></div><FileSpreadsheet size={20} className="muted" /></CardHeader><CardContent><div className="source-available"><span>剩余余额</span><strong className="numeric">{money(source.availableCents)}</strong></div><div className="source-progress"><span style={{ width: `${Math.max(0, Math.min(100, source.originalCents ? source.usedCents / source.originalCents * 100 : 0))}%` }} /></div><div className="source-totals"><span>原总额<strong className="numeric">{money(source.originalCents)}</strong></span><span>累计已用<strong className="numeric">{money(source.usedCents)}</strong></span></div><div className="source-file"><FileSpreadsheet size={14} /><span title={source.fileName}>{source.fileName}</span></div><Button variant="outline" className="full-width" onClick={() => setSelectedSource(source)}>查看历批使用记录<ChevronRight size={14} /></Button></CardContent></Card>)}</div> : <Card className="empty-source-card"><Empty icon={WalletCards} title="从导入第一份金额表开始" description="上传剩余余额表，系统将识别原额、剩余额和顶部历史使用登记。" /></Card>}
+          <Card className="import-card"><CardHeader><CardTitle>导入新的金额来源</CardTitle><CardDescription>追加独立来源，保留来源顺序。网站是唯一余额账簿，本地 Excel 只能作为版本快照；请勿将同一来源的原表与剩余表重复加入。</CardDescription></CardHeader><CardContent><form onSubmit={uploadSource} className="form-stack"><div className="import-fields"><div className="field"><Label htmlFor="source-file">金额来源文件</Label><Input key={sourceFileKey} id="source-file" disabled={!!busy || !canWrite} type="file" accept=".xlsx" required onChange={(event) => setSourceFile(event.target.files?.[0] || null)} /><p className="field-note">支持.xlsx，最大10MB。请使用未用余额明细表。</p></div><div className="field priority-field"><Label htmlFor="source-priority">使用优先级</Label><Input id="source-priority" disabled={!!busy || !canWrite} type="number" min={1} step={1} required value={sourcePriority} onChange={(event) => setSourcePriority(event.target.value)} /></div></div><div className="field"><Label htmlFor="source-history">截至当前已扣除的商品</Label><Input id="source-history" placeholder="例如：商品甲／商品乙／商品丙" value={sourceHistory} onChange={(event) => setSourceHistory(event.target.value)} disabled={!!busy || !canWrite || !!workspace?.productHistory.length} /><p className="field-note">按批次顺序填写，用“／”分隔。表中已有历史用额时必须填写；建立后沿用已确认清单。</p></div>{sources.length > 0 && <div className="field"><Label htmlFor="source-reference">独立来源编号</Label><Input id="source-reference" placeholder="填写财务凭证号、来源表编号或其他唯一编号" value={sourceReference} maxLength={120} disabled={!!busy || !canWrite} required onChange={(event) => setSourceReference(event.target.value)} /><p className="field-note">已有账簿追加来源时必填，不能与现有来源重复。网站会保存确认人和确认时间。</p></div>}<p className="field-note">申领部门或使用中心为空时，该行只按自身金额独立试算，不能补填或与其他行合并。</p><label className="confirm-line"><input type="checkbox" disabled={!!busy || !canWrite} checked={sourceConfirmed} onChange={(event) => setSourceConfirmed(event.target.checked)} required /><span>我已确认此来源与已导入金额不重复，历史商品清单及顺序正确。</span></label>{pendingCount > 0 && <p className="inline-warning"><CircleAlert size={15} />导入会更新余额版本，现有未入账批次需要重新试算。</p>}<div className="form-actions"><Button type="submit" disabled={!workspace || !sourceFile || !sourceConfirmed || (sources.length > 0 && !sourceReference.trim()) || !!busy || !canWrite}>{busy === "source" ? <LoaderCircle size={16} className="animate-spin" /> : <Upload size={16} />}{busy === "source" ? "正在核对并导入…" : "确认并导入来源"}</Button></div></form></CardContent></Card>
         </>}
 
         {view === "tax" && <div className="tax-grid"><div><Card className="tax-summary"><CardHeader><span className="icon-tile"><Landmark size={22} /></span><CardTitle>税务主体资料</CardTitle><CardDescription>已登记的开票资料</CardDescription></CardHeader><CardContent><div className="tax-count numeric">{workspace ? number(workspace.taxCount) : "—"}<span>家主体</span></div>{workspace?.taxFile ? <div className="source-file"><FileSpreadsheet size={15} /><span>{workspace.taxFile.name}</span></div> : <p className="muted">尚未上传税务主体表。</p>}{workspace?.taxOverrideFile && <div className="source-file"><ShieldCheck size={15} /><span>{workspace.taxOverrideCount}条修正 · {workspace.taxOverrideFile.name}</span></div>}<div className="context-note"><ShieldCheck size={16} /><p>按公司代码唯一精确匹配，再核对实际主体名称。账号和信用代码始终按文本保留。</p></div></CardContent></Card><Card className="import-card"><CardHeader><CardTitle>{workspace?.taxFile ? "更新税务资料" : "上传税务资料"}</CardTitle><CardDescription>后续批次使用更新后的资料，已生成批次保留原输入快照。</CardDescription></CardHeader><CardContent><form onSubmit={uploadTax} className="form-stack"><div className="field"><Label htmlFor="tax-file">税务主体记录</Label><Input key={taxFileKey} id="tax-file" disabled={!!busy || !canWrite} type="file" accept=".xlsx" required onChange={(event) => setTaxFile(event.target.files?.[0] || null)} /><p className="field-note">上传完整税务主体表，最大10MB。</p></div>{pendingCount > 0 && <p className="inline-warning"><CircleAlert size={15} />更新资料后，待入账批次需要重新生成并核验。</p>}<div className="form-actions"><Button type="submit" disabled={!workspace || !taxFile || !!busy || !canWrite}>{busy === "tax" ? <LoaderCircle size={16} className="animate-spin" /> : <Upload size={16} />}{busy === "tax" ? "正在校验资料…" : "上传并保存资料"}</Button></div></form></CardContent></Card><Card className="import-card"><CardHeader><CardTitle>上传已确认税务修正</CardTitle><CardDescription>JSON 必须为每条修正写明确认依据、适用批次，或明确授权用于未来批次。</CardDescription></CardHeader><CardContent><form onSubmit={uploadTaxOverride} className="form-stack"><div className="field"><Label htmlFor="tax-override-file">税务修正 JSON</Label><Input key={taxOverrideFileKey} id="tax-override-file" disabled={!!busy || !canWrite} type="file" accept=".json,application/json" required onChange={(event) => setTaxOverrideFile(event.target.files?.[0] || null)} /><p className="field-note">最大1MB。未写明作用范围的修正会被拒绝。</p></div><div className="form-actions"><Button type="submit" disabled={!workspace || !taxOverrideFile || !!busy || !canWrite}>{busy === "tax-override" ? <LoaderCircle size={16} className="animate-spin" /> : <Upload size={16} />}{busy === "tax-override" ? "正在校验修正…" : "保存税务修正"}</Button></div></form></CardContent></Card></div><Card className="tax-rules"><CardHeader><CardTitle>开票明细填写规则</CardTitle><CardDescription>按来源表中的当前主体类型处理</CardDescription></CardHeader><CardContent><div className="tax-rule-row"><Badge variant="outline">小规模 / 简易征收</Badge><h3>仅填写统一社会信用代码</h3><p>按税务表保留信用代码原文。</p></div><div className="tax-rule-row"><Badge className="status-blue">一般纳税人 · 一般征收</Badge><h3>填写完整专票资料</h3><p>实际主体名称、信用代码、注册地址、开户行、基本户账号，空一行后填写“专票”。</p></div><div className="tax-rule-row"><Badge className="status-amber">资料待确认</Badge><h3>保留待补状态</h3><p>英文主体查不到资料时填写“形式发票”；其他无法核实的明细留空、红底，保留待补记录。金额仍按已确认规则独立核对。</p></div></CardContent></Card></div>}
@@ -453,7 +409,7 @@ export default function Dashboard({ user }: { user: User }) {
         {view === "history" && <Card className="table-card history-card"><CardHeader className="inline-card-header"><div><CardTitle>全部批次</CardTitle><CardDescription>保留正式批次和待核验结果，避免重复扣减</CardDescription></div><div className="search-box"><Search size={16} /><Input aria-label="搜索商品或批次" placeholder="搜索商品或批次编号" value={query} onChange={(event) => setQuery(event.target.value)} /></div></CardHeader><CardContent>{batchTable(filteredBatches)}{batches.length >= 100 && <p className="field-note table-note">当前展示最近100个批次。</p>}</CardContent></Card>}
 
         {view === "rules" && <div className="rules-grid">{[
-          ["01", "部门空值按规则匹配", "申领人、成本中心、费用承担法律主体、申领用途必须一致。申领部门和使用中心分别判断：空值可与唯一非空值合组；同字段不同非空值不能合组。存在多个可能归属时需要人工选择。法律主体允许名称与代码换序，二者本身都须一致。"],
+          ["01", "部门完整一致，空白行独立", "申领人、成本中心、费用承担法律主体、申领用途必须一致。只有申领部门和使用中心同时非空、且两项都逐字相同时才能合并；任一字段为空，该来源行必须单独成组，不能补填或与另一空白行合并。法律主体允许名称与代码换序，二者本身都须一致。"],
           ["02", "精确金额与合并组余款", "每组使用额为单价整数倍，总金额与总数量精确达到目标。选用后，合并组余款为0，或大于等于300元的整数元；不按单条记录或单个来源单独判断门槛。"],
           ["03", "来源优先，逐行追溯", "同组可跨来源合并。先最大化第一来源实际贡献，再在这一最优值下减少分组；组内按来源优先级和原行顺序使用，不自动删除内容相同的真实记录。"],
           ["04", "实际使用与剩余分别保存", "已用金额标红；部分使用的原记录拆为红字已用金额和正常颜色的余额。剩余表仅删除已用行，保留所有未用金额，作为下一批来源。"],

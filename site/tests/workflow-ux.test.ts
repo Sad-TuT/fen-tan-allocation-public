@@ -68,7 +68,6 @@ test("draft wizard advances only after each user-visible prerequisite", () => {
     deriveDraftProgress({
       hasSources: false,
       parametersReady: false,
-      hasAmbiguities: false,
       hasSimulation: false,
       hasTemplate: false,
     }),
@@ -78,7 +77,6 @@ test("draft wizard advances only after each user-visible prerequisite", () => {
     deriveDraftProgress({
       hasSources: true,
       parametersReady: false,
-      hasAmbiguities: false,
       hasSimulation: false,
       hasTemplate: false,
     }).stage,
@@ -88,17 +86,6 @@ test("draft wizard advances only after each user-visible prerequisite", () => {
     deriveDraftProgress({
       hasSources: true,
       parametersReady: true,
-      hasAmbiguities: true,
-      hasSimulation: false,
-      hasTemplate: false,
-    }).nextLabel,
-    "确认部门归属",
-  );
-  assert.equal(
-    deriveDraftProgress({
-      hasSources: true,
-      parametersReady: true,
-      hasAmbiguities: false,
       hasSimulation: false,
       hasTemplate: false,
     }).stage,
@@ -108,7 +95,6 @@ test("draft wizard advances only after each user-visible prerequisite", () => {
     deriveDraftProgress({
       hasSources: true,
       parametersReady: true,
-      hasAmbiguities: false,
       hasSimulation: true,
       hasTemplate: true,
     }),

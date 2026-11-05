@@ -28,7 +28,6 @@ registerHooks({ resolve(specifier, context, next) {
     export const getBatch = async () => globalThis.__aiTest.batch ?? null;
     export const simulate = async (...args) => {
       globalThis.__aiTest.calls.push(args);
-      if(globalThis.__aiTest.mode === 'ambiguous') { const e = new Error('需确认'); e.code='AMBIGUOUS_ASSIGNMENT'; throw e; }
       if(globalThis.__aiTest.mode === 'stale') throw new Error('余额版本已变化，请刷新后重新试算。');
       return {version:27,product:args[0],priceCents:2000,plan:{groups:[],totalCents:6000,quantity:3,priceCents:2000}};
     };
@@ -42,7 +41,7 @@ test('AI draft trial uses the same captured workspace version and never supplies
   const result = await aiParseDraft('测试输入', 'test-user-success');
   assert.deepEqual(globalThis.__aiTest.calls.at(-1), ['测试商品', '20.00', 3, 27]);
   assert.deepEqual(result.plan, {groups:0,totalCents:6000,quantity:3});
-  assert.deepEqual(result.simulation, {version:27,plan:{groups:[],totalCents:6000,quantity:3,priceCents:2000},product:'测试商品',priceCents:2000,assignments:[]});
+  assert.deepEqual(result.simulation, {version:27,plan:{groups:[],totalCents:6000,quantity:3,priceCents:2000},product:'测试商品',priceCents:2000});
   assert.equal(result.warning, null);
 });
 
@@ -62,14 +61,6 @@ test('DeepSeek timeout returns a safe retriable error without invoking the solve
   const before = globalThis.__aiTest.calls.length;
   await assert.rejects(() => aiParseDraft('测试输入', 'test-user-timeout'), /连接超时/);
   assert.equal(globalThis.__aiTest.calls.length, before);
-});
-
-test('AI draft asks for manual confirmation when department assignment is ambiguous', async () => {
-  globalThis.__aiTest.mode = 'ambiguous';
-  const result = await aiParseDraft('测试输入', 'test-user-ambiguous');
-  assert.equal(result.plan, null);
-  assert.match(result.warning, /确认部门归属/);
-  assert.equal(globalThis.__aiTest.calls.at(-1).length, 4);
 });
 
 test('AI draft surfaces stale workspace instead of silently retrying or committing', async () => {
