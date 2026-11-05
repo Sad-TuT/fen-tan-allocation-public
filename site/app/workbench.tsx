@@ -90,6 +90,10 @@ function JobStatus({ status }: { status: ProcessingJob["status"] }) {
   return <Badge variant="outline" className={`job-status ${item.className}`}><Icon size={14} />{item.label}</Badge>;
 }
 
+function usesCurrentRules(job: ProcessingJob): boolean {
+  return !job.plan || job.plan.ruleVersion === ALLOCATION_RULE_VERSION;
+}
+
 function SourceAllocationChart({ plan, onSourceClick }: { plan: AllocationPlan; onSourceClick?: (sourceId: string) => void }) {
   return <section className="job-source-chart" aria-labelledby="allocation-chart-title">
     <div className="job-chart-heading"><div><h3 id="allocation-chart-title">本批资金分配</h3><p>来源原始余额 → 本批使用 → 本批剩余；选择来源可查看原始记录。</p></div><span className="job-chart-key"><i />本批使用 <i className="key-remaining" />本批剩余</span></div>
@@ -358,9 +362,6 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
   const [price, setPrice] = useState(startsFromAnotherBatch || job.priceCents === null ? "" : (job.priceCents / 100).toFixed(2));
   const [quantity, setQuantity] = useState(startsFromAnotherBatch || job.quantity === null ? "" : String(job.quantity));
   const [simulation, setSimulation] = useState<AllocationPlan | null>(startsFromAnotherBatch ? null : job.plan);
-  const [confirmedAssignments, setConfirmedAssignments] = useState<DepartmentAssignment[]>([]);
-  const [ambiguities, setAmbiguities] = useState<{ sourceId: string; rowId: string; originalRow: number; applicant: string; amountCents: number; candidates: { department: string; useCenter: string }[] }[]>([]);
-  const [departmentChoices, setDepartmentChoices] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [adoptConfirmed, setAdoptConfirmed] = useState(false);
@@ -369,6 +370,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
   const [visibleData, setVisibleData] = useState<VisibleData | undefined>();
   const [selectedFile, setSelectedFile] = useState("");
   const mutable = canWrite && job.status === "draft";
+  const currentRuleVersion = usesCurrentRules(job);
   const files = job.files;
   const sourceFiles = files.filter((file) => file.role === "source");
   const resultFiles = files.filter((file) => file.role === "invoice" || file.role === "source-marked" || file.role === "source-remaining" || file.role === "audit");
@@ -400,40 +402,10 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
     event.preventDefault();
     if (!canSimulate) return;
     try {
-      const result = await operation<JobResponse & { simulation?: AllocationPlan }>("simulate", { action: "simulate", id: job.id, revision: job.revision, product: product.trim(), price, quantity: Number(quantity), assignments: confirmedAssignments });
+      const result = await operation<JobResponse & { simulation?: AllocationPlan }>("simulate", { action: "simulate", id: job.id, revision: job.revision, product: product.trim(), price, quantity: Number(quantity) });
       setSimulation(result.simulation ?? result.job.plan);
-      setAmbiguities([]); setDepartmentChoices({});
-    } catch (failure) {
-      const data = typeof failure === "object" && failure !== null && "data" in failure ? (failure as {data?: Record<string, unknown>}).data : undefined;
-      if (data?.code === "AMBIGUOUS_ASSIGNMENT" && Array.isArray(data.ambiguities)) {
-        setSimulation(null); setError(""); setDepartmentChoices({});
-        setAmbiguities(data.ambiguities as typeof ambiguities);
-      } else setSimulation(null);
-    }
-  }
-
-  async function confirmDepartments() {
-    const resolved = new Map(confirmedAssignments.map((item) => [JSON.stringify([item.sourceId, item.rowId]), item]));
-    for (const item of ambiguities) {
-      const key = JSON.stringify([item.sourceId, item.rowId]);
-      const choice = departmentChoices[key];
-      const candidate = Number.isInteger(Number(choice)) ? item.candidates[Number(choice)] : null;
-      if (!candidate) { setError("请先确认每一条空白部门记录的归属。"); return; }
-      resolved.set(key, { sourceId: item.sourceId, rowId: item.rowId, department: candidate.department, useCenter: candidate.useCenter });
-    }
-    setConfirmedAssignments([...resolved.values()]); setAmbiguities([]);
-    await runWithAssignments([...resolved.values()]);
-  }
-
-  async function runWithAssignments(assignments: DepartmentAssignment[]) {
-    if (!canSimulate) return;
-    try {
-      const result = await operation<JobResponse & { simulation?: AllocationPlan }>("simulate", { action: "simulate", id: job.id, revision: job.revision, product: product.trim(), price, quantity: Number(quantity), assignments });
-      setSimulation(result.simulation ?? result.job.plan); setConfirmedAssignments(assignments); setAmbiguities([]); setDepartmentChoices({});
-    } catch (failure) {
-      const data = typeof failure === "object" && failure !== null && "data" in failure ? (failure as {data?: Record<string, unknown>}).data : undefined;
-      if (data?.code === "AMBIGUOUS_ASSIGNMENT" && Array.isArray(data.ambiguities)) { setError(""); setSimulation(null); setAmbiguities(data.ambiguities as typeof ambiguities); }
-      else setSimulation(null);
+    } catch {
+      setSimulation(null);
     }
   }
 
@@ -496,11 +468,6 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
             <div className="job-input-field"><Label htmlFor={`job-quantity-${job.id}`}>本批数量</Label><Input id={`job-quantity-${job.id}`} inputMode="numeric" value={quantity} onChange={(event) => { setQuantity(event.target.value.replace(/\D/g, "")); setSimulation(null); }} maxLength={9} placeholder="0" disabled={!mutable || !!busy} /></div>
             <div className="job-product-actions"><span>{taskTotalCents > 0 ? `目标总额 ${money(taskTotalCents)}` : "请输入商品、单价和数量"}</span><Button type="submit" disabled={!canSimulate}>{busy === "simulate" ? <LoaderCircle size={16} className="animate-spin" /> : <Check size={16} />}{busy === "simulate" ? "正在精确试算…" : finishedPlan ? "重新试算" : "精确试算"}</Button></div>
           </form>
-          {ambiguities.length > 0 && <div className="job-assignment-check" aria-labelledby="assignment-check-heading">
-            <div><CircleAlert size={16} /><div><strong id="assignment-check-heading">需要确认空白部门记录</strong><p>这些记录可能属于多个部门组。逐条选择后再试算。</p></div></div>
-            {ambiguities.map((row) => { const key = JSON.stringify([row.sourceId, row.rowId]); return <label className="job-assignment-row" key={key}><span>第 {row.originalRow} 行 · {row.applicant || "未填写申领人"} · {money(row.amountCents)}</span><select value={departmentChoices[key] ?? ""} onChange={(event) => setDepartmentChoices((current) => ({ ...current, [key]: event.target.value }))}><option value="">选择部门归属</option>{row.candidates.map((candidate, index) => <option key={`${candidate.department}-${candidate.useCenter}-${index}`} value={String(index)}>{[candidate.department, candidate.useCenter].filter(Boolean).join(" / ") || "全部留空"}</option>)}</select></label>; })}
-            <Button type="button" onClick={() => void confirmDepartments()} disabled={!!busy}>{busy === "simulate" ? <LoaderCircle size={15} className="animate-spin" /> : <Check size={15} />}确认归属并继续试算</Button>
-          </div>}
           {finishedPlan && <div className="job-plan-result" id="job-plan-result">
             <div className="job-plan-summary"><span>试算结果</span><strong className="numeric">{money(finishedPlan.totalCents)}</strong><span>{quantityFormat(finishedPlan.quantity)} 件 · {finishedPlan.groups.length} 个费用分组</span><span className="job-plan-note"><LockKeyhole size={13} />试算不扣减已用资金</span></div>
             <SourceAllocationChart plan={finishedPlan} onSourceClick={browseSource} />

@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import type { AllocationPlan, AllocationGroup, DepartmentAssignment } from "./lib/allocation";
+import { ALLOCATION_RULE_VERSION, type AllocationPlan, type AllocationGroup, type DepartmentAssignment } from "./lib/allocation";
 import { deriveDraftProgress, deriveNextAction } from "./lib/workflow-ux";
 import AccountPanel from "./account-panel";
 import { AiDraftAssistant, AiPrecheck, AiAsk } from "./ai-panel";
@@ -171,7 +171,6 @@ export default function Dashboard({ user }: { user: User }) {
   const draftProgress = deriveDraftProgress({
     hasSources: sources.length > 0,
     parametersReady: !!product.trim() && !!estimatedTotal,
-    hasAmbiguities: ambiguities.length > 0,
     hasSimulation: !!simulation,
     hasTemplate: !!template,
   });
@@ -182,7 +181,7 @@ export default function Dashboard({ user }: { user: User }) {
   });
   const reports = selectedBatch?.reviews || [];
   const selectedStale = selectedBatch?.status === "awaiting_review" && selectedBatch.versionAtCreation !== workspace?.version;
-  const selectedOldRule = selectedBatch?.status === "awaiting_review" && selectedBatch.data.plan.ruleVersion !== "department-compat-v3";
+  const selectedOldRule = selectedBatch?.status === "awaiting_review" && selectedBatch.data.plan.ruleVersion !== ALLOCATION_RULE_VERSION;
   const passed = reports.filter((report) => report.status === "passed" && !report.issues?.length && !report.unverified?.length && report.reviewDigest === selectedBatch?.data.reviewDigest);
   const canCommit = canWrite && selectedBatch?.status === "awaiting_review" && !selectedStale && !selectedOldRule && reports.length === 2 && passed.length === 2 && passed[0].reviewerId !== passed[1].reviewerId && passed[0].reviewerRunId !== passed[1].reviewerRunId;
 
@@ -393,8 +392,8 @@ export default function Dashboard({ user }: { user: User }) {
                       setFlash({ kind: "error", title: "余额版本已变化", message: "请刷新账簿并重新试算这份 AI 方案。" });
                       return;
                     }
-                    setSimulation(aiSimulation);
-                    setConfirmedAssignments(aiSimulation.assignments);
+                    setSimulation({ ...aiSimulation, assignments: [] });
+                    setConfirmedAssignments([]);
                     setAssignmentVersion(aiSimulation.version);
                     setFlash({ kind: "success", title: "AI 方案已通过精确校验", message: `已规划${aiSimulation.plan.groups.length}个分组，上传本批模板后即可生成 Excel。` });
                   } else {
