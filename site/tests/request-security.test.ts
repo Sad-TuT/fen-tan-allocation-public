@@ -49,3 +49,27 @@ test('invalid public configuration fails closed and local SSH endpoint remains u
   assert.equal(isLocalReviewRequest(request('localhost:3028',{proto:'https'})),false);
  }finally{if(previous===undefined)delete process.env.ALLOCATION_PUBLIC_ORIGIN;else process.env.ALLOCATION_PUBLIC_ORIGIN=previous;}
 });
+
+test('multiple exact public HTTPS origins are independently trusted and invalid lists fail closed',()=>{
+ const previous=process.env.ALLOCATION_PUBLIC_ORIGIN;
+ try{
+  process.env.ALLOCATION_PUBLIC_ORIGIN='https://allocation.example.invalid, https://backup.example.invalid';
+  for(const origin of ['https://allocation.example.invalid','https://backup.example.invalid']){
+   const host=new URL(origin).host;
+   const accepted=request(host,{proto:'https',origin});
+   assert.deepEqual(requestAddress(accepted),{mode:'public',origin});
+   assert.equal(hasTrustedOrigin(accepted),true);
+  }
+  assert.equal(hasTrustedOrigin(request('backup.example.invalid',{proto:'https',origin:'https://allocation.example.invalid'})),false);
+  assert.equal(hasTrustedOrigin(request('evil.invalid',{proto:'https',origin:'https://evil.invalid'})),false);
+  for(const invalid of [
+   'https://allocation.example.invalid,',
+   'https://allocation.example.invalid,http://backup.example.invalid',
+   'https://allocation.example.invalid,https://backup.example.invalid/path',
+  ]){
+   process.env.ALLOCATION_PUBLIC_ORIGIN=invalid;
+   assert.equal(requestAddress(request('allocation.example.invalid',{proto:'https'})),null);
+   assert.equal(requestAddress(request('backup.example.invalid',{proto:'https'})),null);
+  }
+ }finally{if(previous===undefined)delete process.env.ALLOCATION_PUBLIC_ORIGIN;else process.env.ALLOCATION_PUBLIC_ORIGIN=previous;}
+});

@@ -3,14 +3,22 @@
 type RequestMode='local'|'public';
 type RouteAddress={mode:RequestMode;origin:string};
 
-function configuredOrigin():URL|null {
+function configuredOrigins():URL[] {
  const raw=process.env.ALLOCATION_PUBLIC_ORIGIN;
- if(!raw)return null;
+ if(!raw)return [];
+ const values=raw.split(',').map(value=>value.trim());
+ if(values.some(value=>!value))return [];
  try{
-  const parsed=new URL(raw);
-  if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash||parsed.origin!==raw)return null;
-  return parsed;
- }catch{return null;}
+  const parsed=values.map(value=>{
+   const origin=new URL(value);
+   if(origin.protocol!=='https:'||origin.username||origin.password
+     ||origin.pathname!=='/'||origin.search||origin.hash||origin.origin!==value){
+    throw new Error('invalid public origin');
+   }
+   return origin;
+  });
+  return parsed.filter((origin,index)=>parsed.findIndex(item=>item.origin===origin.origin)===index);
+ }catch{return [];}
 }
 
 /** Determine the only permissible origin from the validated Host header.
@@ -25,8 +33,8 @@ export function requestAddress(request:Request):RouteAddress|null {
   if(forwarded&&forwarded.toLowerCase()!=='http')return null;
   return {mode:'local',origin:`http://${host}`};
  }
- const publicOrigin=configuredOrigin();
- if(publicOrigin&&host===publicOrigin.host.toLowerCase()&&forwarded?.toLowerCase()==='https')return {mode:'public',origin:publicOrigin.origin};
+ const publicOrigin=configuredOrigins().find(origin=>host===origin.host.toLowerCase());
+ if(publicOrigin&&forwarded?.toLowerCase()==='https')return {mode:'public',origin:publicOrigin.origin};
  return null;
 }
 
