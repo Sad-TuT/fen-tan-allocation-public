@@ -25,8 +25,8 @@ async function input(name:string,priority:number,rows:(string|number)[][]){
 }
 async function invoiceTemplate(){const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('开票');ws.getCell('A1').value='EP-SYNTHETIC';ws.getRow(3).values=invoiceHeaders;return bytes(wb);}
 const makeRow=(amount:number,department:string,useCenter:string)=>(['员工甲',department,useCenter,'成本甲',amount,entity,'合成备注','测试用途']);
-test('generated workbook preserves each raw department field, outputs unique nonblank values and reconciles FIFO across sources',async()=>{
- const a=await input('合成第一表.xlsx',1,[makeRow(105,'','')]);const b=await input('合成第二表.xlsx',2,[makeRow(396,'甲部门','甲中心')]);
+test('generated workbook merges only exact nonblank departments and reconciles FIFO across sources',async()=>{
+ const a=await input('合成第一表.xlsx',1,[makeRow(105,'甲部门','甲中心')]);const b=await input('合成第二表.xlsx',2,[makeRow(396,'甲部门','甲中心')]);
  const sources=[a.source,b.source];const plan=planAllocation(sources,10000,2);
  const generated=await io.generateBatchFiles({batchId:'synthetic',batchCreatedAt:'2026-11-05T00:00:00.000Z',product:'合成商品',priceCents:10000,quantity:2,sources,plan,taxes:[],sourceBuffers:{[a.source.id]:a.data,[b.source.id]:b.data},template:await invoiceTemplate(),productHistory:[]});
  assert.equal(generated.files.length,6);const invoice=(await open(generated.files.find((f:any)=>f.role==='invoice').bytes)).worksheets[0];
@@ -35,16 +35,16 @@ test('generated workbook preserves each raw department field, outputs unique non
  const markedA=(await open(generated.files.find((f:any)=>f.role===`${a.source.id}_marked`).bytes)).worksheets[0];
  const markedB=(await open(generated.files.find((f:any)=>f.role===`${b.source.id}_marked`).bytes)).worksheets[0];
  const remainB=(await open(generated.files.find((f:any)=>f.role===`${b.source.id}_remaining`).bytes)).worksheets[0];
- assert.equal(scalar(markedA.getCell('E4')),105);assert.equal(scalar(markedA.getCell('B4')),'');assert.equal(scalar(markedA.getCell('C4')),'');
+ assert.equal(scalar(markedA.getCell('E4')),105);assert.equal(scalar(markedA.getCell('B4')),'甲部门');assert.equal(scalar(markedA.getCell('C4')),'甲中心');
  assert.equal(markedA.getCell('E4').font.color?.argb?.slice(-6),'FF0000');assert.equal(scalar(markedB.getCell('E4')),95);assert.equal(scalar(markedB.getCell('E5')),301);
  assert.equal(scalar(markedB.getCell('B4')),'甲部门');assert.equal(scalar(markedB.getCell('C4')),'甲中心');assert.equal(scalar(markedB.getCell('B5')),'甲部门');assert.equal(scalar(markedB.getCell('C5')),'甲中心');
  assert.equal(scalar(remainB.getCell('E4')),301);assert.equal(scalar(remainB.getCell('B4')),'甲部门');assert.equal(scalar(remainB.getCell('C4')),'甲中心');
  assert.equal(scalar(markedA.getCell('I2')),105);assert.equal(scalar(markedB.getCell('I2')),95);assert.equal(scalar(remainB.getCell('I2')),95);
  assert.equal(scalar(markedA.getCell('D2')),105);assert.equal(scalar(markedA.getCell('E2')),0);assert.equal(scalar(remainB.getCell('D2')),396);assert.equal(scalar(remainB.getCell('E2')),301);
 });
-test('nonused but compatible source row still determines invoice display and complete group amount',async()=>{
+test('blank department row stays isolated and its invoice fields remain blank',async()=>{
  const a=await input('合成.xlsx',1,[makeRow(100,'',''),makeRow(301,'甲部门','甲中心')]);const sources=[a.source];const plan=planAllocation(sources,10000,1);
  const generated=await io.generateBatchFiles({batchId:'synthetic2',batchCreatedAt:'2026-11-05T00:00:00.000Z',product:'合成商品',priceCents:10000,quantity:1,sources,plan,taxes:[],sourceBuffers:{[a.source.id]:a.data},template:await invoiceTemplate(),productHistory:[]});
- const invoice=(await open(generated.files.find((f:any)=>f.role==='invoice').bytes)).worksheets[0];assert.equal(scalar(invoice.getCell('B4')),'甲部门');assert.equal(scalar(invoice.getCell('C4')),'甲中心');
+ const invoice=(await open(generated.files.find((f:any)=>f.role==='invoice').bytes)).worksheets[0];assert.equal(scalar(invoice.getCell('B4')),'');assert.equal(scalar(invoice.getCell('C4')),'');
  const remain=(await open(generated.files.find((f:any)=>f.role===`${a.source.id}_remaining`).bytes)).worksheets[0];assert.equal(scalar(remain.getCell('E4')),301);assert.equal(scalar(remain.getCell('B4')),'甲部门');assert.equal(scalar(remain.getCell('C4')),'甲中心');
 });

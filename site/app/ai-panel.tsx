@@ -8,10 +8,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { AllocationPlan, DepartmentAssignment } from "./lib/allocation";
+import type { AllocationPlan } from "./lib/allocation";
 
 type Draft = { product: string; price: string; quantity: number };
-type AgentSimulation = { version: number; product: string; priceCents: number; assignments: DepartmentAssignment[]; plan: AllocationPlan };
+type AgentSimulation = {
+  version: number;
+  product: string;
+  priceCents: number;
+  plan: AllocationPlan;
+};
 type DraftResult = { draft: Draft; note: string; plan: { groups: number; totalCents: number; quantity: number } | null; warning: string | null; simulation: AgentSimulation | null };
 type Risk = { severity: "high" | "medium" | "low"; title: string; detail: string; evidence: string };
 
@@ -33,8 +38,9 @@ const SEVERITY: Record<Risk["severity"], { label: string; className: string }> =
   low: { label: "低", className: "ai-risk-low" },
 };
 
-// DeepSeek interprets the request and runs the trusted exact solver. Financial
-// output always comes from the integer-cent planner, never the model response.
+// DeepSeek interprets the request and schedules the trusted exact solver. Any
+// financial fields returned by the model are ignored; only validated solver
+// output may populate the dashboard.
 export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disabled: boolean; onApply: (draft: Draft, simulation: AgentSimulation | null) => void; embedded?: boolean }) {
   const router = useRouter();
   const [description, setDescription] = useState("");
@@ -64,12 +70,12 @@ export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disa
       </div>
       <div className="ai-actions">
         <Button type="submit" disabled={disabled || busy || !description.trim()}>{busy ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}{busy ? "DeepSeek 正在规划与试算…" : "DeepSeek 自动分摊"}</Button>
-        <p className="field-note">DeepSeek 理解指令并调度精确分摊；金额由网站按整数分计算并校验。</p>
+        <p className="field-note">DeepSeek 理解指令并调度精确分摊；每条来源、金额、余款和数量均由网站整数分校验器复核后才可生成 Excel。</p>
       </div>
     </form>
     {error && <p className="ai-error"><CircleAlert size={15} />{error.replace(/[。！？]+$/, "")}。你仍可在下方手动填写，不影响继续处理。</p>}
     {result && <div className="ai-result">
-      <div className="ai-result-title"><Badge className="status-blue">{result.simulation ? "方案已通过试算" : "参数已识别"}</Badge><span>{result.simulation ? "请核对结果明细" : "请核对后补充参数"}</span></div>
+      <div className="ai-result-title"><Badge className="status-blue">{result.simulation ? "方案已通过试算" : "参数已识别"}</Badge><span>{result.simulation ? "DeepSeek 规划完成，请核对精确结果" : "请核对参数后重新试算"}</span></div>
       <div className="ai-fields">
         <div><span>商品名称</span><strong>{result.draft.product}</strong></div>
         <div><span>单价</span><strong className="numeric">{money(Number(result.draft.price) * 100)}</strong></div>
@@ -83,13 +89,13 @@ export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disa
   </>;
 
   if (embedded) return <div className="ai-entry">
-    <div className="ai-entry-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><div className="inline-heading"><h3>DeepSeek 自动分摊</h3><Badge variant="outline">网站内处理</Badge></div><p>DeepSeek 理解指令并规划，网站精确校验后生成候选 Excel；采用仍由人确认。</p></div></div>
+    <div className="ai-entry-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><div className="inline-heading"><h3>DeepSeek 自动分摊</h3><Badge variant="outline">网站内处理</Badge></div><p>输入商品、单价和数量。DeepSeek 完成理解与规划，网站精确校验后生成 Excel；正式入账仍须两名独立复核。</p></div></div>
     <div className="ai-agent-stages" aria-label="DeepSeek 自动处理阶段"><span>理解指令</span><i /><span>生成方案</span><i /><span>逐分钱校验</span><i /><span>生成 Excel</span></div>
     {content}
   </div>;
 
   return <Card className="ai-card">
-    <CardHeader><div className="ai-card-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><CardTitle>DeepSeek 自动分摊</CardTitle><CardDescription>用一句话描述这一批，模型规划后由网站校验并生成文件。</CardDescription></div></div></CardHeader>
+    <CardHeader><div className="ai-card-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><CardTitle>DeepSeek 自动分摊</CardTitle><CardDescription>用一句话描述这一批，模型规划后由网站校验并生成文件，不会直接入账。</CardDescription></div></div></CardHeader>
     <CardContent>{content}</CardContent>
   </Card>;
 }

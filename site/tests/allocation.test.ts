@@ -28,33 +28,28 @@ test("legal entity changes only the name/code ordering and paired code wrapper",
   assert.equal(normalizeLegalEntity("ABC123 示例公司").recognized, false);
 });
 
-test("blank department matches a unique nonblank value; other fields stay exact", () => {
-  const sources = [{ ...source("s1", 1, [row(3300, { department: "" }), row(3300, { department: "部门" }), row(3300, { department: "", purpose: "员工礼品 " })]), allowBlankDepartment: true }];
+test("exact nonblank departments merge while a blank department remains independent", () => {
+  const sources = [source("s1", 1, [row(3300, { department: "" }), row(3300, { department: "部门" }), row(3300, { department: "部门" })])];
   const result = planAllocation(sources, 3300, 3);
   assert.equal(result.groups.length, 2);
-  assert.equal(result.groups.find(g=>g.purpose==='员工礼品')?.department,'部门');
+  assert.deepEqual(result.groups.map(group => [group.department, group.availableCents, group.usedCents]), [["", 3300, 3300], ["部门", 6600, 6600]]);
+  assert.ok(result.groups.every(group => group.remainderCents === 0));
   assert.equal(validateAllocationPlan(sources, 3300, 3, result).valid, true);
 });
 
-test("confirmed department assignment persists by source row and is revalidated", () => {
-  const persisted = row(10000, {
-    department: "",
-    departmentResolution: {department:"部门甲",useCenter:""},
-  });
-  const sources = [source("s1", 1, [row(10000, {department:"部门甲"}), persisted, row(10000, {department:"部门乙"})])];
-  const plan = planAllocation(sources, 10000, 3);
-  assert.ok(plan.departmentAssignments.some(a=>a.rowId===persisted.id&&a.department==="部门甲"));
-  assert.equal(validateAllocationPlan(sources, 10000, 3, plan).valid, true);
-  const changed = structuredClone(sources);
-  changed[0].rows.find(r=>r.id===persisted.id)!.departmentResolution={department:"不存在",useCenter:""};
-  assert.throws(()=>planAllocation(changed,10000,3),/合法候选/);
-  const overwrite=structuredClone(sources);
-  overwrite[0].rows.find(r=>r.department==="部门甲")!.departmentResolution={department:"部门乙",useCenter:""};
-  assert.throws(()=>planAllocation(overwrite,10000,3),/不能覆盖已有非空原值/);
+test("manual department assignments are rejected and source values stay unchanged", () => {
+  const blank = row(10000, { department: "" });
+  const sources = [source("s1", 1, [row(10000, { department: "部门甲" }), blank, row(10000, { department: "部门乙" })])];
+  const before = JSON.stringify(sources);
+  assert.throws(
+    () => planAllocation(sources, 10000, 1, {}, [{ sourceId: "s1", rowId: blank.id, department: "部门甲", useCenter: "使用中心" }]),
+    /禁止补填部门/,
+  );
+  assert.equal(JSON.stringify(sources), before);
 });
 
 
-test("blank department is accepted for all sources and first source priority remains independently checked", () => {
+test("blank department rows remain usable independently and first source priority remains checked", () => {
   const first = source("first", 1, [row(3300, { department: "" }), row(3300, { applicant: "有部门" })]);
   const second = { ...source("second", 2, [row(3300, { department: "" })]), allowBlankDepartment: true };
   const third = source("third", 3, [row(33000, { department: "" })]);
@@ -70,8 +65,8 @@ test("blank department is accepted for all sources and first source priority rem
   assert.equal(validation.valid, true);
   const reordered = structuredClone(sources); reordered[0].priority = 3; reordered[1].priority = 1; reordered[2].priority = 2;
   const reorderedPlan = planAllocation(reordered, 3300, 2);
-  assert.equal(reorderedPlan.sourceUses.some(use => use.sourceId === "second"), true);
-  assert.equal(reorderedPlan.sourceUses.some(use => use.sourceId === "third"), true);
+  assert.equal(reorderedPlan.sourceSummaries[0].usedCents, 3300);
+  assert.equal(reorderedPlan.sourceUses.reduce((total, use) => total + use.usedCents, 0), 6600);
 });
 
 test("cross-source group uses FIFO and allows non-price-multiple source contributions", () => {
@@ -125,7 +120,7 @@ test("historical red amounts are excluded once and history reconciles with the o
   assert.throws(() => planAllocation(bad, 3300, 2), (e: unknown) => e instanceof AllocationError && e.code === "LEDGER_MISMATCH");
 });
 
-test("missing use center is included in a compatible group while source amount stays conserved", () => {
+test("missing use center remains independently available while source amount stays conserved", () => {
   const sources = [source("s1", 1, [row(100000, { useCenter: "" }), row(6600)])];
   const result = planAllocation(sources, 3300, 2);
   assert.equal(result.exclusions.length, 0);
@@ -155,7 +150,7 @@ test("resource limits report unverified scale rather than financial impossibilit
 test("current plans use the hardened rule version and old pending plans fail validation", () => {
   const sources = [source("s1", 1, [row(40000)])];
   const plan = planAllocation(sources, 3300, 3);
-  assert.equal(plan.ruleVersion, "department-compat-v3");
+  assert.equal(plan.ruleVersion, "department-exact-v4");
   assert.equal(validateAllocationPlan(sources, 3300, 3, plan).valid, true);
   const old = structuredClone(plan) as any;
   old.ruleVersion = "department-compat-v2";

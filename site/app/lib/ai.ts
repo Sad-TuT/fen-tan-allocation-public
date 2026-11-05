@@ -2,7 +2,7 @@ import 'server-only';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cents } from './spreadsheets';
-import type { AllocationPlan, DepartmentAssignment } from './allocation';
+import type { AllocationPlan } from './allocation';
 import { getBatch, simulate, stateSummary } from './workflow';
 
 // The Key stays on the server: the browser only ever talks to /api/ai.
@@ -125,7 +125,12 @@ const yuan = (valueCents: number) => (valueCents / 100).toFixed(2);
 const text = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 
 export type AiDraft = { product: string; price: string; quantity: number };
-export type AiSimulation = { version: number; plan: AllocationPlan; product: string; priceCents: number; assignments: DepartmentAssignment[] };
+export type AiSimulation = {
+  version: number;
+  plan: AllocationPlan;
+  product: string;
+  priceCents: number;
+};
 export type AiDraftResult = {
   draft: AiDraft;
   note: string;
@@ -365,13 +370,13 @@ export async function aiWorkspacePrecheck(input: { jobId: string; userId: string
   }
   const riskSummary = prepared.risksSummary && typeof prepared.risksSummary === 'object'
     ? prepared.risksSummary as Record<string, unknown> : {};
-  const ambiguousCount = Number(riskSummary.missingDepartmentGroups) || 0;
+  const blankIndependentCount = Number(riskSummary.missingDepartmentGroups) || 0;
   const groupedSourceDifference = Number(riskSummary.sourceDifferenceGroups) || 0;
   const taxPending = Number.isSafeInteger(prepared.taxPending) ? Number(prepared.taxPending) : 0;
-  if (ambiguousCount > 0) {
-    const label = `${ambiguousCount} 个分组含部门字段空白`;
+  if (blankIndependentCount > 0) {
+    const label = `${blankIndependentCount} 个独立组保留空白部门字段`;
     signals.push(label);
-    deterministic.push({ severity: 'low', title: '分组中包含空白部门字段', detail: '空白字段可能按已确认规则兼容。当前预检只看到数量摘要，没有检查这些行的具体归属。', evidence: label });
+    deterministic.push({ severity: 'low', title: '独立组保留空白部门字段', detail: '每条任一部门字段为空的来源行都会独立成组；预检只读取汇总，没有检查各行明细。', evidence: label });
   }
   if (groupedSourceDifference > 0 && !deterministic.some((risk) => risk.title === '金额核对差额不为零')) {
     const label = `${groupedSourceDifference} 个分组存在来源核对差异`;
@@ -491,13 +496,11 @@ export async function aiParseDraft(input: string, userId: string): Promise<AiDra
   try {
     const result = await simulate(product, price, quantity, summary.version);
     plan = { groups: result.plan.groups.length, totalCents: result.plan.totalCents, quantity: result.plan.quantity };
-    // Only the deterministic solver may supply financial output. The model is
-    // limited to the requested product fields and cannot provide a plan.
-    simulation = { ...result, assignments: [] };
+    // Model output is limited to the three product parameters above. The
+    // financial plan below comes only from the trusted integer-cent solver.
+    simulation = result;
   } catch (error) {
-    warning = error && typeof error === 'object' && 'code' in error && error.code === 'AMBIGUOUS_ASSIGNMENT'
-      ? '部分空部门记录有多个归属，请将商品信息填入表单，在试算中确认部门归属。'
-      : error instanceof Error ? error.message : '试算未通过。';
+    warning = error instanceof Error ? error.message : '试算未通过。';
   }
   return { draft: { product, price, quantity }, note: text(data.note, 200), plan, warning, simulation };
 }

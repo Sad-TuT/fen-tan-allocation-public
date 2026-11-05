@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { AllocationPlan, DepartmentAssignment } from "./lib/allocation";
+import { ALLOCATION_RULE_VERSION, type AllocationPlan } from "./lib/allocation";
 import type { ProcessingJob, ProcessingJobRequest, ProcessingJobSummary } from "./lib/processing-job-types";
 
 export type SessionUser = { id: string; name: string; email?: string; role: "admin" | "operator" | "viewer" };
