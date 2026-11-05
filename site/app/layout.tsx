@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import {
-  CONTENT_SECURITY_POLICY,
   edgeSecurityHeadersEnabled,
+  HTML_CONTENT_SECURITY_POLICY,
 } from "./lib/security-policy.ts";
 import "./globals.css";
 
@@ -35,7 +35,7 @@ export default function RootLayout({
         {edgeSecurityHeadersEnabled() ? (
           <meta
             httpEquiv="Content-Security-Policy"
-            content={CONTENT_SECURITY_POLICY}
+            content={HTML_CONTENT_SECURITY_POLICY}
           />
         ) : null}
       </head>

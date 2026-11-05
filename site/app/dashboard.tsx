@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert, CircleCheck, ClipboardCheck, Coins, Copy, FileClock, FileSpreadsheet, FolderOpen, Landmark, LayoutDashboard, LoaderCircle, LogOut, Menu, Plus, ReceiptText, RefreshCw, Search, ShieldCheck, Sparkles, Upload, WalletCards, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { AllocationPlan, AllocationGroup, DepartmentAssignment } from "./lib/allocation";
+import { deriveDraftProgress, deriveNextAction } from "./lib/workflow-ux";
 import AccountPanel from "./account-panel";
 import { AiDraftAssistant, AiPrecheck, AiAsk } from "./ai-panel";
 
@@ -38,7 +39,7 @@ const NAV: { id: View; title: string; icon: typeof LayoutDashboard }[] = [
 ];
 const DESCRIPTIONS: Record<View, string> = {
   overview: "查看共享余额与批次进度，接续每一笔分摊。",
-  new: "填写商品信息，先精确试算，再生成待核验文件。",
+  new: "按五步完成：输入商品、精确试算、生成文件、独立复核、确认入账。",
   ai: "基于当前来源余额与最近批次回答账目疑问。",
   sources: "保留每份来源的身份、优先级与累计使用记录。",
   tax: "统一管理开票资料，按法律主体名称和代码精确匹配。",
@@ -46,6 +47,7 @@ const DESCRIPTIONS: Record<View, string> = {
   rules: "沿用已确认的业务规则，让每个批次有据可查。",
   account: "管理个人密码和账号权限。",
 };
+const WORKFLOW_STEPS = ["录入商品", "精确试算", "生成文件", "独立复核", "确认入账"];
 const money = (cents: number) => new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cents / 100);
 const number = (n: number) => new Intl.NumberFormat("zh-CN").format(n);
 const date = (value: string) => Number.isNaN(new Date(value).getTime()) ? "—" : new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
@@ -80,6 +82,18 @@ function GroupTable({ plan }: { plan: AllocationPlan }) {
 function SourcePlanTable({ plan }: { plan: AllocationPlan }) {
   return <Table><TableHeader><TableRow><TableHead>金额来源</TableHead>{["原总额", "此前已用", "本批使用", "本批后余额", "累计已用", "核对差额"].map((name) => <TableHead className="text-right" key={name}>{name}</TableHead>)}</TableRow></TableHeader><TableBody>{plan.sourceSummaries.map((source) => <TableRow key={source.sourceId}><TableCell className="font-medium">{source.name}</TableCell>{[source.originalCents, source.previousUsedCents, source.usedCents, source.remainingCents, source.cumulativeUsedCents].map((value, index) => <TableCell key={index} className={`text-right numeric ${index === 2 ? "accent-text" : ""}`}>{money(value)}</TableCell>)}<TableCell className={`text-right numeric ${source.differenceCents === 0 ? "green-text" : "error-text"}`}>{money(source.differenceCents)}</TableCell></TableRow>)}</TableBody></Table>;
 }
+function WorkflowRail({ current }: { current: 1 | 2 | 3 | 4 | 5 }) {
+  return <ol className="workflow-rail" aria-label={`本批处理进度：第${current}步，共5步`}>
+    {WORKFLOW_STEPS.map((label, index) => {
+      const step = (index + 1) as 1 | 2 | 3 | 4 | 5;
+      const state = step < current ? "done" : step === current ? "current" : "future";
+      return <li key={label} className={`workflow-rail-step ${state}`} aria-current={state === "current" ? "step" : undefined}>
+        <span>{state === "done" ? <Check size={14} /> : String(step).padStart(2, "0")}</span>
+        <strong>{label}</strong>
+      </li>;
+    })}
+  </ol>;
+}
 
 export default function Dashboard({ user }: { user: User }) {
   const [view, setView] = useState<View>("overview");
@@ -113,6 +127,7 @@ export default function Dashboard({ user }: { user: User }) {
   const [batchOpen, setBatchOpen] = useState(false);
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
   const [reviewPrompt, setReviewPrompt] = useState("");
+  const batchScrollPosition = useRef(0);
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/workspace", { cache: "no-store" });
@@ -153,11 +168,29 @@ export default function Dashboard({ user }: { user: User }) {
   const sourceDifference = selectedSource ? selectedSource.originalCents - selectedSource.availableCents - selectedSource.usedCents : 0;
   const canWrite = user.role !== "viewer";
   const canTrial = canWrite && !!product.trim() && !!estimatedTotal && sources.length > 0 && !busy;
+  const draftProgress = deriveDraftProgress({
+    hasSources: sources.length > 0,
+    parametersReady: !!product.trim() && !!estimatedTotal,
+    hasAmbiguities: ambiguities.length > 0,
+    hasSimulation: !!simulation,
+    hasTemplate: !!template,
+  });
+  const nextAction = deriveNextAction({
+    sourceCount: sources.length,
+    taxCount: workspace?.taxCount || 0,
+    batches: batches.map((batch) => ({ id: batch.id, product: batch.product, passedReviews: batch.passedReviews, isStale: batch.isStale })),
+  });
   const reports = selectedBatch?.reviews || [];
   const selectedStale = selectedBatch?.status === "awaiting_review" && selectedBatch.versionAtCreation !== workspace?.version;
   const selectedOldRule = selectedBatch?.status === "awaiting_review" && selectedBatch.data.plan.ruleVersion !== "department-compat-v3";
   const passed = reports.filter((report) => report.status === "passed" && !report.issues?.length && !report.unverified?.length && report.reviewDigest === selectedBatch?.data.reviewDigest);
   const canCommit = canWrite && selectedBatch?.status === "awaiting_review" && !selectedStale && !selectedOldRule && reports.length === 2 && passed.length === 2 && passed[0].reviewerId !== passed[1].reviewerId && passed[0].reviewerRunId !== passed[1].reviewerRunId;
+
+  useEffect(() => {
+    if (!ambiguities.length && !simulation) return;
+    const target = document.getElementById(ambiguities.length ? "department-assignment-step" : "simulation-step");
+    target?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  }, [ambiguities.length, simulation]);
 
   function go(next: View) { setView(next); setMobileMenuOpen(false); }
   async function perform(label: string, action: () => Promise<void>) {
@@ -176,10 +209,26 @@ export default function Dashboard({ user }: { user: User }) {
   }
   async function showBatch(id: string) {
     await perform("batch", async () => {
+      batchScrollPosition.current = window.scrollY;
       const batch = await request({ action: "batch", id });
       if (!batch) throw new Error("批次不存在。");
       setSelectedBatch(batch); setReviewPrompt(""); setBatchOpen(true); await refresh();
     });
+  }
+  async function runNextAction() {
+    switch (nextAction.kind) {
+      case "import-source": go("sources"); return;
+      case "import-tax": go("tax"); return;
+      case "start-allocation": go("new"); return;
+      case "continue-review":
+      case "confirm-commit":
+        if (nextAction.batchId) await showBatch(nextAction.batchId);
+        return;
+    }
+  }
+  function setBatchVisibility(open: boolean) {
+    setBatchOpen(open);
+    if (!open) requestAnimationFrame(() => window.scrollTo({ top: batchScrollPosition.current, behavior: "auto" }));
   }
   const assignmentKey = (sourceId: string, rowId: string) => JSON.stringify([sourceId, rowId]);
   function clearTrial() { setSimulation(null); setAmbiguities([]); setChoices({}); setConfirmedAssignments([]); setAssignmentVersion(null); }
@@ -223,8 +272,11 @@ export default function Dashboard({ user }: { user: User }) {
       const body = new FormData(); body.set("action", "prepare"); body.set("version", String(simulation.version)); body.set("file", checkFile(template));
       body.set("product", simulation.product); body.set("price", price); body.set("quantity", quantity); body.set("assignments", JSON.stringify(simulation.assignments));
       const result = await request(body);
+      batchScrollPosition.current = 0;
+      setView("history");
+      setMobileMenuOpen(false);
       setSelectedBatch(result); setReviewPrompt(""); setBatchOpen(true); setSimulation(null); setTemplate(null); setTemplateKey((key) => key + 1); await refresh();
-      setFlash({ kind: "success", title: "待核验文件已生成", message: "请交给Codex启动两个独立agent核验。正式入账前，当前余额保持不变。" });
+      setFlash({ kind: "success", title: "待核验文件已生成", message: "本批参数与结果文件已经冻结。进入两名独立复核 agent 的核验流程后，正式入账前余额仍保持不变。" });
     });
   }
   async function uploadSource(event: FormEvent) {
@@ -312,23 +364,73 @@ export default function Dashboard({ user }: { user: User }) {
             <Card className="stat-card"><CardContent><div className="stat-label">已完成批次<ClipboardCheck size={16} /></div><div className="stat-value numeric">{workspace ? number(batches.filter((batch) => completed(batch.status)).length) : "—"}<small>批</small></div><div className="stat-foot">本工作空间已正式入账</div></CardContent></Card>
             <Card className="stat-card"><CardContent><div className="stat-label">待核验批次<FileClock size={16} /></div><div className="stat-value numeric">{workspace ? number(pendingCount) : "—"}<small>批</small></div><div className="stat-foot">核验完成前不扣减余额</div></CardContent></Card>
           </section>
-          <Card className="start-card"><CardContent><div className="start-copy"><h2>{sources.length ? "开始下一批产品分摊" : "建立你的第一份分摊账簿"}</h2><p>{sources.length ? "自动沿用当前余额。填写商品参数，精确试算后生成开票资料。" : "导入金额来源与税务资料，保留每个批次的使用记录和剩余金额。"}</p><Button onClick={() => go(sources.length ? "new" : "sources")}>{sources.length ? "填写商品信息" : "导入金额来源"}<ArrowRight size={16} /></Button></div><div className="start-process"><div><span className={sources.length ? "done" : ""}>{sources.length ? <Check size={16} /> : "01"}</span><strong>金额来源</strong><small>逐源保留身份与余额</small></div><i /><div><span>02</span><strong>精确分摊</strong><small>金额与数量逐项核对</small></div><i /><div><span>03</span><strong>核验入账</strong><small>双agent独立复核</small></div></div></CardContent></Card>
+          <Card className="start-card next-action-card"><CardContent><div className="start-copy"><span className="next-action-eyebrow">{nextAction.eyebrow}</span><h2>{nextAction.title}</h2><p>{nextAction.description}</p><Button onClick={runNextAction} disabled={!!busy || !workspace}>{busy === "batch" ? <LoaderCircle className="animate-spin" size={16} /> : <ArrowRight size={16} />}{nextAction.label}</Button></div><div className="start-process"><div><span className={sources.length ? "done" : ""}>{sources.length ? <Check size={16} /> : "01"}</span><strong>余额与税务</strong><small>{sources.length ? `${sources.length}个来源已接入` : "尚未导入金额来源"}</small></div><i /><div><span className={sources.length && workspace?.taxCount ? "done" : ""}>{sources.length && workspace?.taxCount ? <Check size={16} /> : "02"}</span><strong>商品与试算</strong><small>金额、数量、余款逐项核对</small></div><i /><div><span className={batches.some((batch) => completed(batch.status)) ? "done" : ""}>{batches.some((batch) => completed(batch.status)) ? <Check size={16} /> : "03"}</span><strong>复核与入账</strong><small>双重复核后由你确认</small></div></div></CardContent></Card>
           <div className="overview-columns"><div className="overview-primary"><Card className="table-card"><CardHeader className="inline-card-header"><div><CardTitle>最近批次</CardTitle><CardDescription>查看生成、核验与入账进度</CardDescription></div><Button variant="ghost" size="sm" onClick={() => go("history")}>全部批次<ArrowUpRight size={15} /></Button></CardHeader><CardContent>{batchTable(batches.slice(0, 5), true)}</CardContent></Card>
             <Card className="sources-overview"><CardHeader className="inline-card-header"><div><CardTitle>来源余额</CardTitle><CardDescription>按既定顺序优先使用</CardDescription></div><Button variant="ghost" size="sm" onClick={() => go("sources")}>管理来源<ChevronRight size={14} /></Button></CardHeader><CardContent>{sources.length ? sources.map((source) => <div className="source-balance-row" key={source.id}><span className="source-order">{String(source.priority).padStart(2, "0")}</span><div><strong>{source.name}</strong><small>{number(source.rowCount)}条剩余记录</small></div><span className="numeric">{money(source.availableCents)}</span></div>) : <div className="quiet-empty"><WalletCards size={18} />导入金额表后，在这里查看各来源余额。</div>}</CardContent></Card>
           </div><div className="overview-secondary"><Card className="ledger-card"><CardHeader><CardTitle>账簿状态</CardTitle><CardDescription>确认资料和余额承接情况</CardDescription></CardHeader><CardContent><div className="check-row"><span><WalletCards size={16} />金额来源</span><Badge className={sources.length ? "status-green" : "status-muted"}>{sources.length ? `${sources.length}份已导入` : "待导入"}</Badge></div><div className="check-row"><span><Landmark size={16} />税务主体</span><strong className="numeric">{workspace ? number(workspace.taxCount) : "—"}<small>家</small></strong></div><div className="check-row"><span><ShieldCheck size={16} />正式入账要求</span><span className="plain-status">双agent通过</span></div><div className="ledger-equation"><span>每个来源独立核对</span><p>原总额 = 剩余金额 + 累计已用</p></div><Button variant="outline" className="full-width" onClick={() => go("rules")}>查看完整规则<ArrowRight size={14} /></Button></CardContent></Card><div className="small-guidance"><ReceiptText size={20} strokeWidth={1.5} /><h3>每批结果，完整留档</h3><p>两个来源对应六份Excel。文件夹末尾累计标注已分摊商品，下一批自动接续剩余金额。</p></div></div></div>
         </>}
 
         {view === "new" && <>
+          <WorkflowRail current={draftProgress.stage} />
           {!sources.length && <Alert className="soft-notice"><CircleAlert /><AlertTitle>先导入金额来源</AlertTitle><AlertDescription>新批次默认使用共享账簿的当前余额。<Button variant="link" size="sm" onClick={() => go("sources")}>去导入<ArrowRight size={14} /></Button></AlertDescription></Alert>}
-          {canWrite && <AiDraftAssistant disabled={!sources.length || !!busy} onApply={(draft) => {
-            setProduct(draft.product);
-            setPrice(draft.price);
-            setQuantity(String(draft.quantity));
-            clearTrial();
-          }} />}
-          <div className="new-grid"><Card className="form-card"><CardHeader><CardTitle>商品信息</CardTitle><CardDescription>总额由单价与数量精确计算</CardDescription></CardHeader><CardContent><form onSubmit={trial} className="form-stack"><div className="field"><Label htmlFor="product">商品名称</Label><Input id="product" disabled={!!busy} placeholder="输入本批分摊的商品名称" value={product} maxLength={80} required onChange={(event) => { setProduct(event.target.value); clearTrial(); }} /></div><div className="field-pair"><div className="field"><Label htmlFor="price">单价（元）</Label><Input id="price" disabled={!!busy} placeholder="0.00" inputMode="decimal" value={price} required onChange={(event) => { setPrice(event.target.value); clearTrial(); }} /></div><div className="field"><Label htmlFor="quantity">数量</Label><Input id="quantity" disabled={!!busy} placeholder="输入正整数" inputMode="numeric" value={quantity} required onChange={(event) => { setQuantity(event.target.value); clearTrial(); }} /></div></div><div className="total-preview"><span>本批精确总额</span><strong className="numeric">{estimatedTotal ? money(estimatedTotal) : "—"}</strong></div><Button type="submit" size="lg" className="full-width" disabled={!canTrial}>{busy === "simulate" ? <LoaderCircle className="animate-spin" size={17} /> : <Coins size={17} />}{busy === "simulate" ? "正在精确试算…" : "开始精确试算"}</Button><p className="field-note centered">试算不会扣减余额，也不会登记已用金额。</p></form></CardContent></Card><Card className="form-card source-selection"><CardHeader><CardTitle>本批金额来源</CardTitle><CardDescription>先最大化第一来源实际用额，再减少分组</CardDescription></CardHeader><CardContent>{sources.length ? <><div className="selected-source-list">{sources.map((source) => <div key={source.id}><span className="source-order">{String(source.priority).padStart(2, "0")}</span><span><strong>{source.name}</strong><small>优先级 {source.priority}</small></span><strong className="numeric">{money(source.availableCents)}</strong></div>)}</div><div className="source-total"><span>合计剩余余额</span><strong className="numeric">{money(available)}</strong></div></> : <div className="quiet-empty">尚未导入金额来源。</div>}<div className="context-note"><ShieldCheck size={16} /><p>剩余余额可能包含其他必填信息不完整的记录；部门空白可按规则参与，实际分摊以试算为准。每组使用额须为单价整数倍，使用后合并组余额须为0，或大于等于300元的整数。</p></div><Button variant="outline" className="full-width" onClick={() => go("sources")}>查看来源与历史记录<ArrowUpRight size={14} /></Button></CardContent></Card></div>
-          {ambiguities.length > 0 && <Card className="simulation-card"><CardHeader><CardTitle>确认部门归属</CardTitle><CardDescription>这些来源行可匹配多个不同部门组合，请逐项选择。确认后才会继续试算；金额不会因确认而扣减。</CardDescription></CardHeader><CardContent><div className="issue-list">{ambiguities.map((item, index) => { const key = assignmentKey(item.sourceId, item.rowId); return <div key={key} className="context-note"><div><p><strong>{item.originalFile} · 第{item.originalRow}行</strong> · {money(item.amountCents)}</p><p>{item.applicant} · {item.costCenter} · {item.legalEntity} · {item.purpose}</p><p>原申领部门：{item.department || "空白"}；原使用中心：{item.useCenter || "空白"}</p><label htmlFor={`department-choice-${index}`}>请选择本行完整金额所属的部门组合</label><select id={`department-choice-${index}`} value={choices[key] ?? ""} disabled={!!busy} onChange={(event) => setChoices(previous => ({...previous, [key]:event.target.value}))}><option value="">请选择，不自动分配</option>{item.candidates.map((candidate, i) => <option key={i} value={String(i)}>申领部门：{candidate.department || "空白"}；使用中心：{candidate.useCenter || "空白"}</option>)}</select></div></div>; })}</div><Button onClick={resolveAmbiguities} disabled={!!busy || ambiguities.some(item => choices[assignmentKey(item.sourceId,item.rowId)] === undefined || choices[assignmentKey(item.sourceId,item.rowId)] === "")}>{busy === "simulate" ? "正在重新试算…" : "确认归属并重新试算"}</Button></CardContent></Card>}
-          {simulation && <Card className="simulation-card"><CardHeader className="inline-card-header"><div><div className="inline-heading"><CardTitle>试算方案</CardTitle><Badge className="status-green">精确可行</Badge></div><CardDescription>{simulation.product} · {number(simulation.plan.quantity)}个 · {simulation.plan.groups.length}个分组</CardDescription></div><div className="simulation-amount numeric">{money(simulation.plan.totalCents)}</div></CardHeader><CardContent><Tabs defaultValue="groups"><TabsList><TabsTrigger value="groups">分组明细</TabsTrigger><TabsTrigger value="sources">来源与对账</TabsTrigger><TabsTrigger value="issues">未选记录与提示{simulation.plan.exclusions.length > 0 ? ` (${simulation.plan.exclusions.length})` : ""}</TabsTrigger></TabsList><TabsContent value="groups"><GroupTable plan={simulation.plan} /></TabsContent><TabsContent value="sources"><SourcePlanTable plan={simulation.plan} /></TabsContent><TabsContent value="issues"><div className="issue-list">{simulation.plan.warnings.map((warning, index) => <p key={index}><CircleAlert size={15} />{warning}</p>)}{simulation.plan.exclusions.length ? <Table><TableHeader><TableRow><TableHead>来源 / 原行</TableHead><TableHead>未选原因</TableHead><TableHead className="text-right">金额</TableHead></TableRow></TableHeader><TableBody>{simulation.plan.exclusions.map((item) => <TableRow key={`${item.sourceId}-${item.rowId}`}><TableCell>{item.originalFile} · 第{item.originalRow}行</TableCell><TableCell>{item.reason}</TableCell><TableCell className="text-right numeric">{money(item.amountCents)}</TableCell></TableRow>)}</TableBody></Table> : <p className="muted">没有因资料缺失而排除的记录。</p>}</div></TabsContent></Tabs><div className="template-section"><div><h3>上传本批开票模板</h3><p>保留EP编号与模板结构，生成待双agent核验的结果。</p></div><div className="template-input"><Label htmlFor="template-file" className="sr-only">开票模板文件</Label><Input key={templateKey} id="template-file" disabled={!!busy || !canWrite} type="file" accept=".xlsx" onChange={(event) => setTemplate(event.target.files?.[0] || null)} /><Button size="lg" disabled={!template || !!busy || !canWrite} onClick={prepare}>{busy === "prepare" ? <LoaderCircle size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{busy === "prepare" ? "正在生成…" : "生成待核验文件"}</Button></div></div></CardContent></Card>}
+          <div className="workflow-step-heading">
+            <span className="workflow-step-number">01</span>
+            <div><h2>录入本批商品</h2><p>可以交给 DeepSeek 识别，也可以直接填写。识别出的参数需要你核对后才能试算。</p></div>
+            <Badge className={draftProgress.stage > 1 ? "status-green" : "status-blue"}>{draftProgress.stage > 1 ? "已完成" : draftProgress.nextLabel}</Badge>
+          </div>
+          <div className="new-grid">
+            <Card className="form-card guided-form-card">
+              <CardHeader><CardTitle>商品参数</CardTitle><CardDescription>网站会用整数分计算，单价和数量必须精确达到目标金额。</CardDescription></CardHeader>
+              <CardContent>
+                {canWrite && <AiDraftAssistant embedded disabled={!sources.length || !!busy} onApply={(draft) => {
+                  setProduct(draft.product);
+                  setPrice(draft.price);
+                  setQuantity(String(draft.quantity));
+                  clearTrial();
+                  requestAnimationFrame(() => document.getElementById("product")?.focus());
+                }} />}
+                <div className="manual-entry-divider"><span>或手动填写</span></div>
+                <form onSubmit={trial} className="form-stack">
+                  <div className="field"><Label htmlFor="product">商品名称</Label><Input id="product" disabled={!!busy} placeholder="输入本批分摊的商品名称" value={product} maxLength={80} required onChange={(event) => { setProduct(event.target.value); clearTrial(); }} /></div>
+                  <div className="field-pair"><div className="field"><Label htmlFor="price">单价（元）</Label><Input id="price" disabled={!!busy} placeholder="0.00" inputMode="decimal" value={price} required onChange={(event) => { setPrice(event.target.value); clearTrial(); }} /></div><div className="field"><Label htmlFor="quantity">数量</Label><Input id="quantity" disabled={!!busy} placeholder="输入正整数" inputMode="numeric" value={quantity} required onChange={(event) => { setQuantity(event.target.value); clearTrial(); }} /></div></div>
+                  <div className="total-preview"><span>本批精确总额</span><strong className="numeric">{estimatedTotal ? money(estimatedTotal) : "—"}</strong></div>
+                  <Button type="submit" size="lg" className="full-width" disabled={!canTrial}>{busy === "simulate" ? <LoaderCircle className="animate-spin" size={17} /> : <Coins size={17} />}{busy === "simulate" ? "正在精确试算…" : "下一步：开始精确试算"}</Button>
+                  <p className="field-note centered">试算不会扣减余额，也不会登记已用金额。</p>
+                </form>
+              </CardContent>
+            </Card>
+            <Card className="form-card source-selection">
+              <CardHeader><CardTitle>本批余额与规则</CardTitle><CardDescription>系统自动按既定优先级使用来源，并先最大化第一来源贡献。</CardDescription></CardHeader>
+              <CardContent>
+                {sources.length ? <><div className="available-summary"><span>当前可用总额</span><strong className="numeric">{money(available)}</strong><small>{sources.length} 个来源 · 按优先级依次使用</small></div><div className="selected-source-list">{sources.map((source) => <div key={source.id}><span className="source-order">{String(source.priority).padStart(2, "0")}</span><span><strong>{source.name}</strong><small>优先级 {source.priority}</small></span><strong className="numeric">{money(source.availableCents)}</strong></div>)}</div></> : <div className="quiet-empty">尚未导入金额来源。</div>}
+                <div className={`readiness-row ${workspace?.taxCount ? "ready" : ""}`}>{workspace?.taxCount ? <CircleCheck size={17} /> : <CircleAlert size={17} />}<span><strong>{workspace?.taxCount ? `税务主体已就绪 · ${number(workspace.taxCount)}家` : "税务主体资料尚未上传"}</strong><small>{workspace?.taxCount ? "生成文件时会按公司代码精确匹配。" : "金额仍可试算，但生成开票明细前需要补齐。"}</small></span>{!workspace?.taxCount && <Button variant="ghost" size="sm" onClick={() => go("tax")}>去上传</Button>}</div>
+                <div className="context-note"><ShieldCheck size={16} /><p>每组使用额须为单价整数倍。使用后合并组余额只能是 0，或大于等于 300 元的整数元；部门字段按空值兼容规则处理。</p></div>
+                <Button variant="outline" className="full-width" onClick={() => go("sources")}>查看来源与历史记录<ArrowUpRight size={14} /></Button>
+              </CardContent>
+            </Card>
+          </div>
+          {ambiguities.length > 0 && <Card id="department-assignment-step" className="simulation-card workflow-result-card">
+            <CardHeader>
+              <div className="workflow-result-heading"><span className="workflow-step-number">02</span><div><div className="inline-heading"><CardTitle>确认部门归属</CardTitle><Badge className="status-amber">需要你选择</Badge></div><CardDescription>同一金额行有多个兼容的部门组合。逐项确认后，网站才会继续完成精确试算。</CardDescription></div></div>
+            </CardHeader>
+            <CardContent>
+              <div className="issue-list">{ambiguities.map((item, index) => { const key = assignmentKey(item.sourceId, item.rowId); return <div key={key} className="context-note"><div><p><strong>{item.originalFile} · 第{item.originalRow}行</strong> · {money(item.amountCents)}</p><p>{item.applicant} · {item.costCenter} · {item.legalEntity} · {item.purpose}</p><p>原申领部门：{item.department || "空白"}；原使用中心：{item.useCenter || "空白"}</p><label htmlFor={`department-choice-${index}`}>请选择本行完整金额所属的部门组合</label><select id={`department-choice-${index}`} value={choices[key] ?? ""} disabled={!!busy} onChange={(event) => setChoices(previous => ({...previous, [key]:event.target.value}))}><option value="">请选择，不自动分配</option>{item.candidates.map((candidate, i) => <option key={i} value={String(i)}>申领部门：{candidate.department || "空白"}；使用中心：{candidate.useCenter || "空白"}</option>)}</select></div></div>; })}</div>
+              <Button onClick={resolveAmbiguities} disabled={!!busy || ambiguities.some(item => choices[assignmentKey(item.sourceId,item.rowId)] === undefined || choices[assignmentKey(item.sourceId,item.rowId)] === "")}>{busy === "simulate" ? <><LoaderCircle className="animate-spin" size={16} />正在重新试算…</> : <><ArrowRight size={16} />确认归属并重新试算</>}</Button>
+            </CardContent>
+          </Card>}
+          {simulation && <Card id="simulation-step" className="simulation-card workflow-result-card">
+            <CardHeader>
+              <div className="inline-card-header">
+                <div className="workflow-result-heading"><span className="workflow-step-number">03</span><div><div className="inline-heading"><CardTitle>核对试算方案</CardTitle><Badge className="status-green"><CircleCheck size={12} />精确可行</Badge></div><CardDescription>{simulation.product} · {number(simulation.plan.quantity)}个 · {simulation.plan.groups.length}个分组；上传模板后生成文件。</CardDescription></div></div>
+                <div className="simulation-amount numeric">{money(simulation.plan.totalCents)}</div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="trial-outcome"><Check size={17} /><span><strong>金额、数量与组内余款已通过网站核对</strong><small>这一步仍未扣减余额。生成文件后会冻结本批参数，进入独立复核。</small></span></div>
+              <Tabs defaultValue="groups"><TabsList><TabsTrigger value="groups">分组明细</TabsTrigger><TabsTrigger value="sources">来源与对账</TabsTrigger><TabsTrigger value="issues">未选记录与提示{simulation.plan.exclusions.length > 0 ? ` (${simulation.plan.exclusions.length})` : ""}</TabsTrigger></TabsList><TabsContent value="groups"><GroupTable plan={simulation.plan} /></TabsContent><TabsContent value="sources"><SourcePlanTable plan={simulation.plan} /></TabsContent><TabsContent value="issues"><div className="issue-list">{simulation.plan.warnings.map((warning, index) => <p key={index}><CircleAlert size={15} />{warning}</p>)}{simulation.plan.exclusions.length ? <Table><TableHeader><TableRow><TableHead>来源 / 原行</TableHead><TableHead>未选原因</TableHead><TableHead className="text-right">金额</TableHead></TableRow></TableHeader><TableBody>{simulation.plan.exclusions.map((item) => <TableRow key={`${item.sourceId}-${item.rowId}`}><TableCell>{item.originalFile} · 第{item.originalRow}行</TableCell><TableCell>{item.reason}</TableCell><TableCell className="text-right numeric">{money(item.amountCents)}</TableCell></TableRow>)}</TableBody></Table> : <p className="muted">没有因资料缺失而排除的记录。</p>}</div></TabsContent></Tabs>
+              <div className="template-section"><div><h3>上传本批开票模板</h3><p>网站保留模板中的 EP 编号与结构，生成开票单、已用标记、剩余表和核对记录。</p></div><div className="template-input"><Label htmlFor="template-file" className="sr-only">开票模板文件</Label><Input key={templateKey} id="template-file" disabled={!!busy || !canWrite} type="file" accept=".xlsx" onChange={(event) => setTemplate(event.target.files?.[0] || null)} /><Button size="lg" disabled={!template || !!busy || !canWrite} onClick={prepare}>{busy === "prepare" ? <LoaderCircle size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{busy === "prepare" ? "正在生成…" : "下一步：生成待核验文件"}</Button></div></div>
+            </CardContent>
+          </Card>}
         </>}
 
         {view === "ai" && <AiAsk />}
@@ -357,20 +459,21 @@ export default function Dashboard({ user }: { user: User }) {
       </main>
     </div>
 
-    <Dialog open={batchOpen} onOpenChange={setBatchOpen}><DialogContent className="batch-dialog">{selectedBatch && <>
+    <Dialog open={batchOpen} onOpenChange={setBatchVisibility}><DialogContent className="batch-dialog">{selectedBatch && <>
       <DialogHeader><div className="inline-heading"><DialogTitle>{selectedBatch.product}</DialogTitle><Status status={selectedBatch.status} stale={selectedStale} /></div><DialogDescription>批次 <span className="batch-id">{selectedBatch.id}</span> · {date(selectedBatch.createdAt)}</DialogDescription></DialogHeader>
+      <WorkflowRail current={completed(selectedBatch.status) || passed.length === 2 ? 5 : 4} />
       {flash && <Alert variant={flash.kind === "error" ? "destructive" : "default"} className={flash.kind === "success" ? "flash-success" : ""}><CircleAlert /><AlertTitle>{flash.title}</AlertTitle><AlertDescription>{flash.message}</AlertDescription></Alert>}
       <div className="batch-detail-summary"><div><span>分摊总额</span><strong className="numeric">{money(selectedBatch.data.plan.totalCents)}</strong></div><div><span>商品数量</span><strong className="numeric">{number(selectedBatch.data.plan.quantity)}<small>个</small></strong></div><div><span>费用分组</span><strong className="numeric">{selectedBatch.data.plan.groups.length}<small>组</small></strong></div><div><span>独立核验</span><strong className="numeric">{passed.length}<small>/ 2</small></strong></div></div>
       <Tabs defaultValue="files"><TabsList className="detail-tabs"><TabsTrigger value="files">结果与核验</TabsTrigger><TabsTrigger value="groups">分摊明细</TabsTrigger><TabsTrigger value="sources">来源对账</TabsTrigger><TabsTrigger value="invoice">开票明细</TabsTrigger></TabsList>
         <TabsContent value="files">
           <AiPrecheck batchId={selectedBatch.id} disabled={!canWrite} />
-          <div className="review-panel"><div><ShieldCheck size={21} /><div><h3>{completed(selectedBatch.status) ? "本批已正式入账" : selectedOldRule ? "分组规则已更新，需要重新试算" : selectedStale ? "余额版本已变化，需要重新试算" : canCommit ? "两份核验通过，可以确认入账" : "等待Codex完成双agent独立核验"}</h3><p>{completed(selectedBatch.status) ? "本批实际用额已登记，剩余金额已接续到共享账簿。" : selectedOldRule || selectedStale ? "请保留此批记录，使用当前规则和余额新建方案后重新核验。" : "未正式入账前，共享余额保持不变。复制指令到Codex启动核验。"}</p></div></div><div className="review-actions"><Button variant="outline" size="sm" onClick={copyReviewPrompt}><Copy size={14} />复制Codex核验指令</Button><Button variant="ghost" size="sm" disabled={!!busy} onClick={() => showBatch(selectedBatch.id)}><RefreshCw size={14} className={busy === "batch" ? "animate-spin" : ""} />刷新核验状态</Button></div></div>
+          <div className="review-panel"><div><ShieldCheck size={21} /><div><h3>{completed(selectedBatch.status) ? "本批已正式入账" : selectedOldRule ? "分组规则已更新，需要重新试算" : selectedStale ? "余额版本已变化，需要重新试算" : canCommit ? "两份核验通过，可以确认入账" : "等待两名独立复核代理提交报告"}</h3><p>{completed(selectedBatch.status) ? "本批实际用额已登记，剩余金额已接续到共享账簿。" : selectedOldRule || selectedStale ? "请保留此批记录，使用当前规则和余额新建方案后重新核验。" : `当前完成 ${Math.min(passed.length, 2)}/2。未正式入账前，共享余额保持不变。`}</p></div></div><div className="review-actions"><Button variant="outline" size="sm" onClick={copyReviewPrompt}><Copy size={14} />复制独立复核指令</Button><Button variant="ghost" size="sm" disabled={!!busy} onClick={() => showBatch(selectedBatch.id)}><RefreshCw size={14} className={busy === "batch" ? "animate-spin" : ""} />刷新核验状态</Button></div></div>
           <div className="review-cards">{[0, 1].map((index) => { const report = reports[index]; return <div className={`review-card ${report?.status === "passed" ? "review-passed" : report?.status === "failed" ? "review-failed" : ""}`} key={index}><span className="review-agent-icon"><ClipboardCheck size={18} /></span><div><strong>{report ? report.reviewerId : `独立复核agent ${index + 1}`}</strong><p>{report ? report.status === "passed" ? "独立核验通过" : "核验未通过" : "尚未收到报告"}</p>{report?.summary && <p className="review-summary">{report.summary}</p>}{report?.issues?.map((issue, i) => <p className="error-text" key={i}>{issue}</p>)}{report?.unverified?.map((issue, i) => <p className="error-text" key={i}>未验证：{issue}</p>)}</div>{report?.status === "passed" && <CircleCheck size={18} className="green-text" />}</div>; })}</div>
           {reviewPrompt && <div className="copy-prompt"><Label htmlFor="review-prompt">核验指令</Label><textarea id="review-prompt" readOnly value={reviewPrompt} onFocus={(event) => event.target.select()} /></div>}
           <div className="files-heading"><div><h3>本批结果文件<span>{selectedBatch.data.manifest.length}份</span></h3><p className="folder-label"><FolderOpen size={14} />{selectedBatch.data.folderName}</p></div><Button variant="outline" asChild><a href={`/api/download?batch=${encodeURIComponent(selectedBatch.id)}`}><ArrowDownToLine size={15} />{completed(selectedBatch.status) ? "下载本批完整文件夹" : "下载待核验文件包"}</a></Button></div>
           <div className="file-list">{selectedBatch.data.manifest.map((file, index) => <a key={file.role} href={`/api/download?batch=${encodeURIComponent(selectedBatch.id)}&role=${encodeURIComponent(file.role)}`} className="result-file"><span className="file-index">{String(index + 1).padStart(2, "0")}</span><FileSpreadsheet size={18} /><span>{file.name}</span><ArrowDownToLine size={15} /></a>)}</div>
           {selectedBatch.data.taxPending > 0 && <p className="inline-warning"><CircleAlert size={15} />{selectedBatch.data.taxPending}条开票明细待补，已按规则留空并填红底。金额核验与税务待补分别记录。</p>}
-          <div className="commit-bar"><p>{completed(selectedBatch.status) ? "本批已入账，重复操作不会再次扣减。" : selectedOldRule ? "当前批次使用旧分组规则，请重新试算并双重核验。" : selectedStale ? "当前批次余额版本已过期，禁止入账。" : "两名agent都通过后，由你确认正式入账。"}</p>{!completed(selectedBatch.status) && <Button disabled={!canCommit || !!busy} onClick={commit}>{busy === "commit" ? <LoaderCircle className="animate-spin" size={16} /> : <Check size={16} />}{busy === "commit" ? "正在核对并入账…" : "确认正式入账"}</Button>}</div>
+          <div className="commit-bar"><p>{completed(selectedBatch.status) ? "本批已入账，重复操作不会再次扣减。" : selectedOldRule ? "当前批次使用旧分组规则，请重新试算并双重核验。" : selectedStale ? "当前批次余额版本已过期，禁止入账。" : "两名独立复核代理都通过后，由你确认正式入账。"}</p>{!completed(selectedBatch.status) && <Button disabled={!canCommit || !!busy} onClick={commit}>{busy === "commit" ? <LoaderCircle className="animate-spin" size={16} /> : <Check size={16} />}{busy === "commit" ? "正在核对并入账…" : "确认正式入账"}</Button>}</div>
         </TabsContent>
         <TabsContent value="groups"><GroupTable plan={selectedBatch.data.plan} /></TabsContent>
         <TabsContent value="sources"><SourcePlanTable plan={selectedBatch.data.plan} /><p className="field-note table-note">差额为0，同时独立核对分组、余款、拆分、历史登记和来源优先目标。</p></TabsContent>

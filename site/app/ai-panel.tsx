@@ -31,7 +31,7 @@ const SEVERITY: Record<Risk["severity"], { label: string; className: string }> =
 };
 
 // Fills the product form only. The simulate/prepare/review path stays intact.
-export function AiDraftAssistant({ disabled, onApply }: { disabled: boolean; onApply: (draft: Draft) => void }) {
+export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disabled: boolean; onApply: (draft: Draft) => void; embedded?: boolean }) {
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -51,37 +51,41 @@ export function AiDraftAssistant({ disabled, onApply }: { disabled: boolean; onA
     }
   }
 
-  return (
-    <Card className="ai-card">
-      <CardHeader>
-        <div className="ai-card-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><CardTitle>智能录入</CardTitle><CardDescription>用一句话描述这一批，模型只帮你填参数，不会直接入账。</CardDescription></div></div>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={submit} className="ai-form">
-          <div className="field">
-            <Label htmlFor="ai-description">分摊描述</Label>
-            <Textarea id="ai-description" rows={2} maxLength={1000} disabled={disabled || busy} placeholder="例如：商品甲 40 个，每个 28 元" value={description} onChange={(event) => setDescription(event.target.value)} />
-          </div>
-          <div className="ai-actions">
-            <Button type="submit" disabled={disabled || busy || !description.trim()}>{busy ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}{busy ? "正在解析…" : "解析为商品参数"}</Button>
-            <p className="field-note">描述、历史商品名称和来源余额摘要会发送到 DeepSeek 用于解析。解析后仍需试算并走双 agent 核验。</p>
-          </div>
-        </form>
-        {error && <p className="ai-error"><CircleAlert size={15} />{error}</p>}
-        {result && <div className="ai-result">
-          <div className="ai-fields">
-            <div><span>商品名称</span><strong>{result.draft.product}</strong></div>
-            <div><span>单价</span><strong className="numeric">{money(Number(result.draft.price) * 100)}</strong></div>
-            <div><span>数量</span><strong className="numeric">{result.draft.quantity}</strong></div>
-          </div>
-          {result.plan && <p className="ai-ok"><CircleCheck size={15} />试算可行：{result.plan.groups} 个分组，合计 {money(result.plan.totalCents)}。</p>}
-          {result.warning && <p className="ai-warning"><CircleAlert size={15} />{result.warning}</p>}
-          {result.note && <p className="field-note">{result.note}</p>}
-          <Button variant="outline" onClick={() => { onApply(result.draft); setResult(null); setDescription(""); }}>填入商品信息<ArrowRight size={15} /></Button>
-        </div>}
-      </CardContent>
-    </Card>
-  );
+  const content = <>
+    <form onSubmit={submit} className="ai-form">
+      <div className="field">
+        <Label htmlFor="ai-description">一句话描述本批</Label>
+        <Textarea id="ai-description" rows={3} maxLength={1000} disabled={disabled || busy} placeholder="例如：流苏毯，单价 59 元，数量 1500，总额 88500 元" value={description} onChange={(event) => setDescription(event.target.value)} />
+      </div>
+      <div className="ai-actions">
+        <Button type="submit" disabled={disabled || busy || !description.trim()}>{busy ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}{busy ? "DeepSeek 正在解析…" : "识别商品参数"}</Button>
+        <p className="field-note">DeepSeek 只把描述整理为商品名称、单价和数量；金额计算、双重复核和入账门禁仍由网站执行。</p>
+      </div>
+    </form>
+    {error && <p className="ai-error"><CircleAlert size={15} />{error.replace(/[。！？]+$/, "")}。你仍可在下方手动填写，不影响继续处理。</p>}
+    {result && <div className="ai-result">
+      <div className="ai-result-title"><Badge className="status-blue">识别完成</Badge><span>请先核对，再应用到下方表单</span></div>
+      <div className="ai-fields">
+        <div><span>商品名称</span><strong>{result.draft.product}</strong></div>
+        <div><span>单价</span><strong className="numeric">{money(Number(result.draft.price) * 100)}</strong></div>
+        <div><span>数量</span><strong className="numeric">{result.draft.quantity}</strong></div>
+      </div>
+      {result.plan && <p className="ai-ok"><CircleCheck size={15} />预试算可行：{result.plan.groups} 个分组，合计 {money(result.plan.totalCents)}。</p>}
+      {result.warning && <p className="ai-warning"><CircleAlert size={15} />{result.warning}</p>}
+      {result.note && <p className="field-note">{result.note}</p>}
+      <Button variant="outline" onClick={() => { onApply(result.draft); setResult(null); setDescription(""); }}>应用到商品表单<ArrowRight size={15} /></Button>
+    </div>}
+  </>;
+
+  if (embedded) return <div className="ai-entry">
+    <div className="ai-entry-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><div className="inline-heading"><h3>AI 快速录入</h3><Badge variant="outline">DeepSeek 辅助</Badge></div><p>可直接用日常语言输入；识别结果会先展示，不会自动试算或入账。</p></div></div>
+    {content}
+  </div>;
+
+  return <Card className="ai-card">
+    <CardHeader><div className="ai-card-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><CardTitle>智能录入</CardTitle><CardDescription>用一句话描述这一批，模型只帮你填参数，不会直接入账。</CardDescription></div></div></CardHeader>
+    <CardContent>{content}</CardContent>
+  </Card>;
 }
 
 // Advisory risk scan shown inside the batch dialog, before the two-agent gate.

@@ -1,0 +1,4 @@
+# Schema and deployment scripts are checksummed on Linux. Force stable LF
+# output even when a Windows release archive is produced with autocrlf=true.
+*.sql text eol=lf
+*.sh text eol=lf

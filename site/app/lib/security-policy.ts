@@ -1,4 +1,4 @@
-export const CONTENT_SECURITY_POLICY = [
+const CONTENT_SECURITY_POLICY_DIRECTIVES = [
   "default-src 'self'",
   "base-uri 'none'",
   "object-src 'none'",
@@ -10,7 +10,16 @@ export const CONTENT_SECURITY_POLICY = [
   "font-src 'self' data:",
   "connect-src 'self'",
   "worker-src 'self' blob:",
-].join("; ");
+];
+
+export const CONTENT_SECURITY_POLICY =
+  CONTENT_SECURITY_POLICY_DIRECTIVES.join("; ");
+
+// frame-ancestors is not supported in a meta-delivered policy. The trusted
+// edge keeps that directive in the HTTP response header.
+export const HTML_CONTENT_SECURITY_POLICY = CONTENT_SECURITY_POLICY_DIRECTIVES
+  .filter((directive) => !directive.startsWith("frame-ancestors "))
+  .join("; ");
 
 export const APPLICATION_SECURITY_HEADERS: Array<{
   key: string;

@@ -6,6 +6,7 @@ import {
   APPLICATION_SECURITY_HEADERS,
   CONTENT_SECURITY_POLICY,
   edgeSecurityHeadersEnabled,
+  HTML_CONTENT_SECURITY_POLICY,
   securityHeadersForDeployment,
 } from "../app/lib/security-policy.ts";
 
@@ -40,6 +41,13 @@ test("edge-managed deployments omit only duplicated common headers", () => {
   assert.equal(headers.get("X-Frame-Options"), "DENY");
   assert.equal(headers.get("Cross-Origin-Opener-Policy"), "same-origin");
   assert.equal(headers.get("Cross-Origin-Resource-Policy"), "same-origin");
+});
+
+test("the HTML CSP omits directives unsupported in meta delivery", () => {
+  assert.match(HTML_CONTENT_SECURITY_POLICY, /default-src 'self'/);
+  assert.match(HTML_CONTENT_SECURITY_POLICY, /script-src 'self' 'unsafe-inline'/);
+  assert.doesNotMatch(HTML_CONTENT_SECURITY_POLICY, /frame-ancestors/);
+  assert.match(CONTENT_SECURITY_POLICY, /frame-ancestors 'none'/);
 });
 
 test("the edge-managed mode requires the exact opt-in value", () => {
