@@ -21,22 +21,23 @@ const source:any={id:'s',name:'合成来源',priority:2,allowBlankDepartment:tru
 const plan=planAllocation([source],3300,1);
 const financials={totalCents:3300,quantity:1,sourceUsed:{s:3300},sourceRemaining:{s:0}};
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
-async function stage(id:string,version:number,snapshotSource:any){
+async function stage(id:string,version:number,snapshotSource:any,legacy=false){
   const manifest=[];
   for(let n=0;n<4;n++){const bytes=new TextEncoder().encode(`${id}-${n}`),key=`results/${id}/${n}.xlsx`;await persistence.storeFile(key,bytes,'application/octet-stream');manifest.push({key,name:`${n}.xlsx`,role:`result-${n}`,sha256:hash(bytes)});}
   const state={sources:[snapshotSource],taxes:[],productHistory:[]};
   const nextState={sources:[{...source,rows:[]}],taxes:[],productHistory:[{batchId:id,product:'测试商品'}]};
-  const batch={id,product:'测试商品',createdAt:new Date().toISOString(),createdBy:'test',versionAtCreation:version,status:'awaiting_review',data:{reviewDigest:'a'.repeat(64),expectedFinancials:financials,manifest,nextState,plan,snapshot:{state}}};
+  const snapshot=legacy?{state}:{state,ruleVersion:plan.ruleVersion,departmentAssignments:plan.departmentAssignments,groupMembership:plan.groupMembership};
+  const batch={id,product:'测试商品',createdAt:new Date().toISOString(),createdBy:'test',versionAtCreation:version,status:'awaiting_review',data:{reviewDigest:'a'.repeat(64),expectedFinancials:financials,manifest,nextState,plan,snapshot}};
   await persistence.createBatch(batch);
   for(const n of [1,2])await persistence.submitReview(id,{reviewerId:`agent-${n}`,reviewerRunId:`run-${n}`,origin:'codex_subagent',status:'passed',reviewDigest:'a'.repeat(64),financials,checks:[...CORE_REVIEW_CHECKS],issues:[],unverified:[]},'reviewer');
   return batch;
 }
 
-test('old unapproved blank-department batch remains blocked with two reviews; authorized batch posts once',async()=>{
+test('old-rule batch remains blocked with two reviews; new compatible batch posts exactly once',async()=>{
   const state={sources:[source],taxes:[],productHistory:[]};await persistence.saveWorkspace(0,state,'test');
   const legacy=structuredClone(source);delete legacy.allowBlankDepartment;
-  await stage('legacy',1,legacy);
-  await assert.rejects(finalize('legacy','test'),/未经该来源授权|当前规则核对未通过/);
+  await stage('legacy',1,legacy,true);
+  await assert.rejects(finalize('legacy','test'),/旧规则|当前规则核对未通过/);
   assert.deepEqual(await persistence.loadWorkspace(),{version:1,state});
   const valid=await stage('authorized',1,source);
   assert.equal((await finalize('authorized','test')).status,'completed');

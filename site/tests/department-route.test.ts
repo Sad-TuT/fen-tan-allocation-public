@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {registerHooks} from 'node:module';
+const a={sourceId:'s1',rowId:'r2',department:'A',useCenter:'X'};
+(globalThis as any).__routeCalls=[];
+(globalThis as any).__routeMode='ok';
+registerHooks({resolve(specifier:string,context:any,next:any){
+ if(context.parentURL?.endsWith('/api/workspace/route.ts')&&specifier==='../../lib/app-auth')return {url:'data:text/javascript,export async function getAppUser(){return {userId:"operator",role:"operator",mustChangePassword:false}}',shortCircuit:true};
+ if(context.parentURL?.endsWith('/api/workspace/route.ts')&&specifier==='../../lib/workflow')return {url:'data:text/javascript,'+encodeURIComponent(`export async function stateSummary(){return {version:4}};export async function importSource(){return {}};export async function importTax(){return {}};export async function simulate(...args){globalThis.__routeCalls.push(['simulate',...args]);if(globalThis.__routeMode==='ambiguous'){const e=new Error('需确认');e.code='AMBIGUOUS_ASSIGNMENT';e.ambiguities=[{sourceId:'s1',rowId:'r2',candidates:[{department:'A',useCenter:'X'}]}];throw e;}return {ok:true}};export async function prepareBatch(...args){globalThis.__routeCalls.push(['prepare',args[0]]);return {ok:true}};export async function finalize(){return {}};export async function getBatch(){return {}};export async function getReviews(){return []}`),shortCircuit:true};
+ if(context.parentURL?.includes('/app/')&&specifier.startsWith('.')&&!/\.[cm]?[jt]sx?$/.test(specifier))return next(new URL(specifier+'.ts',context.parentURL).href,context);
+ return next(specifier,context);
+}});
+const route=await import(new URL('../app/api/workspace/route.ts',import.meta.url).href);
+function req(body:unknown){return new Request('http://localhost:3028/api/workspace',{method:'POST',headers:{host:'localhost:3028',origin:'http://localhost:3028','content-type':'application/json'},body:JSON.stringify(body)});}
+test('simulate passes exact version and row assignment',async()=>{const response=await route.POST(req({action:'simulate',product:'X',price:'20',quantity:3,version:4,assignments:[a]}));assert.equal(response.status,200);assert.deepEqual((globalThis as any).__routeCalls.at(-1),['simulate','X','20',3,4,[a]]);});
+test('ambiguous responses retain structured candidate data',async()=>{(globalThis as any).__routeMode='ambiguous';const response=await route.POST(req({action:'simulate',product:'X',price:'20',quantity:3,version:4,assignments:[]}));const body=await response.json();assert.equal(response.status,400);assert.equal(body.code,'AMBIGUOUS_ASSIGNMENT');assert.equal(body.ambiguities[0].rowId,'r2');(globalThis as any).__routeMode='ok';});
+test('simulate without valid version or with invalid assignments is rejected',async()=>{assert.equal((await route.POST(req({action:'simulate',product:'X',price:'20',quantity:3}))).status,400);assert.equal((await route.POST(req({action:'simulate',product:'X',price:'20',quantity:3,version:4,assignments:{}}))).status,400);});
+test('prepare passes identical frozen assignments and version',async()=>{const f=new FormData();f.set('action','prepare');f.set('version','4');f.set('product','X');f.set('price','20');f.set('quantity','3');f.set('assignments',JSON.stringify([a]));f.set('file',new File(['x'],'template.xlsx'));const response=await route.POST(new Request('http://localhost:3028/api/workspace',{method:'POST',headers:{host:'localhost:3028',origin:'http://localhost:3028'},body:f}));assert.equal(response.status,200);assert.deepEqual((globalThis as any).__routeCalls.at(-1),['prepare',{product:'X',price:'20',quantity:3,version:4,assignments:[a]}]);});

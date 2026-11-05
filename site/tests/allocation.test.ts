@@ -24,34 +24,33 @@ test("legal entity changes only the name/code ordering and paired code wrapper",
   assert.equal(a.code, "L100001");
 });
 
-test("blank department matches only blank; other fields stay exact", () => {
+test("blank department matches a unique nonblank value; other fields stay exact", () => {
   const sources = [{ ...source("s1", 1, [row(3300, { department: "" }), row(3300, { department: "部门" }), row(3300, { department: "", purpose: "员工礼品 " })]), allowBlankDepartment: true }];
   const result = planAllocation(sources, 3300, 3);
-  assert.equal(result.groups.length, 3);
+  assert.equal(result.groups.length, 2);
+  assert.equal(result.groups.find(g=>g.purpose==='员工礼品')?.department,'部门');
   assert.equal(validateAllocationPlan(sources, 3300, 3, result).valid, true);
 });
 
 
-test("blank department requires explicit source authorization and is independently checked", () => {
+test("blank department is accepted for all sources and first source priority remains independently checked", () => {
   const first = source("first", 1, [row(3300, { department: "" }), row(3300, { applicant: "有部门" })]);
   const second = { ...source("second", 2, [row(3300, { department: "" })]), allowBlankDepartment: true };
-  const third = source("third", 3, [row(3300, { department: "" })]);
+  const third = source("third", 3, [row(33000, { department: "" })]);
   const sources = [first, second, third];
   const plan = planAllocation(sources, 3300, 2);
-  assert.deepEqual(plan.sourceSummaries.map(s => s.usedCents), [3300, 3300, 0]);
-  assert.equal(plan.sourceSummaries[0].remainingCents, 3300);
-  assert.equal(plan.sourceSummaries[2].remainingCents, 3300);
-  assert.equal(plan.exclusions.length, 2);
-  assert.ok(plan.exclusions.every(x => x.reason.includes("申领部门")));
+  assert.deepEqual(plan.sourceSummaries.map(s => s.usedCents), [6600, 0, 0]);
+  assert.equal(plan.sourceSummaries[0].remainingCents, 0);
+  assert.equal(plan.sourceSummaries[2].remainingCents, 33000);
+  assert.equal(plan.exclusions.length, 0);
   assert.equal(validateAllocationPlan(sources, 3300, 2, plan).valid, true);
   const revoked = structuredClone(sources); revoked[1].allowBlankDepartment = false;
   const validation = validateAllocationPlan(revoked, 3300, 2, plan);
-  assert.equal(validation.valid, false);
-  assert.ok(validation.errors.some(e => e.includes("未经该来源授权")));
+  assert.equal(validation.valid, true);
   const reordered = structuredClone(sources); reordered[0].priority = 3; reordered[1].priority = 1; reordered[2].priority = 2;
   const reorderedPlan = planAllocation(reordered, 3300, 2);
   assert.equal(reorderedPlan.sourceUses.some(use => use.sourceId === "second"), true);
-  assert.equal(reorderedPlan.sourceUses.some(use => use.sourceId === "third"), false);
+  assert.equal(reorderedPlan.sourceUses.some(use => use.sourceId === "third"), true);
 });
 
 test("cross-source group uses FIFO and allows non-price-multiple source contributions", () => {
@@ -105,12 +104,12 @@ test("historical red amounts are excluded once and history reconciles with the o
   assert.throws(() => planAllocation(bad, 3300, 2), (e: unknown) => e instanceof AllocationError && e.code === "LEDGER_MISMATCH");
 });
 
-test("missing use center is excluded while its money stays in the balance", () => {
+test("missing use center is included in a compatible group while source amount stays conserved", () => {
   const sources = [source("s1", 1, [row(100000, { useCenter: "" }), row(6600)])];
   const result = planAllocation(sources, 3300, 2);
-  assert.equal(result.exclusions.length, 1);
+  assert.equal(result.exclusions.length, 0);
   assert.equal(result.sourceSummaries[0].remainingCents, 100000);
-  assert.equal(result.eligibleCents, 6600);
+  assert.equal(result.eligibleCents, 106600);
 });
 
 test("same entity is contiguous but six-field groups are never merged merely by entity", () => {

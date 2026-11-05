@@ -92,6 +92,9 @@ export interface AllocationExclusion {
 }
 
 export interface AllocationPlan {
+  ruleVersion: "department-compat-v2";
+  departmentAssignments: DepartmentAssignment[];
+  groupMembership: {key:string;rows:{sourceId:string;rowId:string;amountCents:number}[]}[];
   status: "solved";
   priceCents: number;
   quantity: number;
@@ -112,6 +115,7 @@ export interface AllocationPlan {
     primaryValueCents: number;
     secondaryObjective: "minimize_group_count";
     secondaryValue: number;
+    conditionalOnConfirmedDepartmentAssignments: true;
     activeGroups: number;
     dpCells: number;
   };
@@ -124,7 +128,8 @@ export interface AllocationLimits {
 }
 
 export class AllocationError extends Error {
-  code: "INVALID_INPUT" | "LEDGER_MISMATCH" | "UNSATISFIABLE" | "LIMIT_EXCEEDED";
+  code: "INVALID_INPUT" | "LEDGER_MISMATCH" | "UNSATISFIABLE" | "LIMIT_EXCEEDED" | "AMBIGUOUS_ASSIGNMENT";
+  ambiguities?: DepartmentAmbiguity[];
   constructor(code: AllocationError["code"], message: string) {
     super(message);
     this.name = "AllocationError";
@@ -132,9 +137,12 @@ export class AllocationError extends Error {
   }
 }
 
+export type DepartmentAssignment = {sourceId:string;rowId:string;department:string;useCenter:string};
+export type DepartmentAmbiguity = DepartmentAssignment & {originalFile:string;originalRow:number;amountCents:number;applicant:string;costCenter:string;legalEntity:string;purpose:string;candidates:{department:string;useCenter:string}[]};
+
 const DEFAULT_LIMITS = { maxQuantity: 100_000, maxDpCells: 8_000_000, maxRows: 30_000 };
 const OPEN_PAIRS: Record<string, string> = { "(": ")", "（": "）", "[": "]", "【": "】" };
-const REQUIRED_FIELDS = ["applicant", "useCenter", "costCenter", "legalEntity", "purpose"] as const;
+const REQUIRED_FIELDS = ["applicant", "costCenter", "legalEntity", "purpose"] as const;
 const FIELD_NAMES = { applicant: "申领人", useCenter: "使用中心", costCenter: "成本中心", legalEntity: "费用承担法律主体", purpose: "申领用途" };
 
 function fail(message: string): never { throw new AllocationError("INVALID_INPUT", message); }
@@ -180,6 +188,14 @@ function rowKey(row: SourceRow): string {
   return JSON.stringify([row.applicant, row.department, row.useCenter, row.costCenter, normalizeLegalEntity(row.legalEntity).key, row.purpose]);
 }
 
+function requiredKey(row: SourceRow): string {
+  return JSON.stringify([row.applicant, row.costCenter, normalizeLegalEntity(row.legalEntity).key, row.purpose]);
+}
+function departmentValue(s: string): string { return nonempty(s) ? s : ""; }
+function compatible(a: SourceRow, b: SourceRow): boolean {
+  return (["department", "useCenter"] as const).every(field => !departmentValue(a[field]) || !departmentValue(b[field]) || a[field] === b[field]);
+}
+
 interface InternalGroup {
   key: string;
   row: SourceRow;
@@ -189,11 +205,19 @@ interface InternalGroup {
   first: number;
 }
 
-function inspectSources(sources: Source[], maxRows: number) {
+function inspectSources(sources: Source[], maxRows: number, assignments: DepartmentAssignment[] = []) {
+  if (!Array.isArray(assignments) || assignments.length > maxRows) fail("部门归属确认格式或数量无效。");
+  const requested = new Map<string, DepartmentAssignment>();
+  for (const a of assignments) {
+    if (!a || typeof a !== 'object' || !nonempty(a.sourceId) || !nonempty(a.rowId) || typeof a.department !== 'string' || typeof a.useCenter !== 'string') fail("部门归属确认格式无效。");
+    const id=JSON.stringify([a.sourceId,a.rowId]);
+    if (requested.has(id)) fail("同一来源行的部门归属不能重复确认。");
+    requested.set(id,a);
+  }
   if (!Array.isArray(sources) || !sources.length) fail("请先导入至少一个金额来源。");
   const ordered = sources.map((s, index) => ({ s, index })).sort((a, b) => a.s.priority - b.s.priority || a.index - b.index).map(x => x.s);
   const sourceIds = new Set<string>();
-  const groupMap = new Map<string, InternalGroup>();
+  const eligibleByRequiredKey = new Map<string, SourceRow[]>();
   const exclusions: AllocationExclusion[] = [];
   const before = new Map<string, number>();
   const previous = new Map<string, number>();
@@ -239,24 +263,77 @@ function inspectSources(sources: Source[], maxRows: number) {
       }
       available = add(available, row.amountCents);
       const missing: string[] = REQUIRED_FIELDS.filter(field => !nonempty(row[field]));
-      if (!nonempty(row.department) && source.allowBlankDepartment !== true) missing.push("department");
       if (missing.length) { exclude(`缺少必填信息：${missing.map(field => (FIELD_NAMES as Record<string, string>)[field] || "申领部门").join("、")}。`); continue; }
       if (!row.amountCents) { exclude("金额为0，不参与本批分摊。"); continue; }
-      const key = rowKey(row);
-      let group = groupMap.get(key);
-      if (!group) {
-        group = { key, row, legal: normalizeLegalEntity(row.legalEntity), rows: [], amount: 0, first: 0 };
-        groupMap.set(key, group);
-      }
-      group.rows.push(row);
-      group.amount = add(group.amount, row.amountCents);
-      if (source.id === ordered[0].id) group.first = add(group.first, row.amountCents);
+      const key = requiredKey(row);
+      const rows = eligibleByRequiredKey.get(key) ?? [];
+      rows.push(row); eligibleByRequiredKey.set(key, rows);
     }
     if (historicalRed > previousUsed) throw new AllocationError("LEDGER_MISMATCH", `来源${source.name}的历史红字金额大于已登记历史用额，请先核实历史记录。`);
     if (add(available, previousUsed) !== source.originalCents) throw new AllocationError("LEDGER_MISMATCH", `来源${source.name}对账不平：原总额不等于当前可用明细加历史累计已用。请先核实，不能倒算或改写基准。`);
     before.set(source.id, available);
   }
-  const allGroups = [...groupMap.values()];
+  const allGroups: InternalGroup[] = [];
+  const ambiguities: DepartmentAmbiguity[] = [];
+  let compatibilityChecks=0;
+  for (const rows of eligibleByRequiredKey.values()) {
+    compatibilityChecks += rows.length * rows.length;
+    if(!Number.isSafeInteger(compatibilityChecks)||compatibilityChecks>2_000_000)throw new AllocationError('LIMIT_EXCEEDED','部门兼容检查超过已验证规模，尚未判定是否可分摊。');
+    // A/blank/B creates a non-transitive match. Refuse to assign the blank
+    // row silently when it can match two mutually incompatible alternatives.
+    const effectiveRows: SourceRow[] = [];
+    for (const row of rows) {
+      const alternatives = rows.filter(other => compatible(row, other));
+      const options = (["department", "useCenter"] as const).map(field => {
+        const own=departmentValue(row[field]);if(own)return [own];
+        const values=[...new Set(alternatives.map(r=>departmentValue(r[field])).filter(Boolean))];
+        return ['',...values];
+      });
+      const candidates:{department:string;useCenter:string}[]=[];
+      if(options[0].length*options[1].length>1000)throw new AllocationError('LIMIT_EXCEEDED','部门候选数量超过已验证规模，尚未判定是否可分摊。');
+      for(const department of options[0])for(const useCenter of options[1]){
+        const proposed={...row,department,useCenter};const matching=alternatives.filter(r=>compatible(proposed,r));
+        if(department&&!matching.some(r=>departmentValue(r.department)===department))continue;
+        if(useCenter&&!matching.some(r=>departmentValue(r.useCenter)===useCenter))continue;
+        candidates.push({department,useCenter});
+      }
+      // A partially blank candidate remains viable when every attempt to
+      // fill it would conflict in the other department dimension. Remove
+      // only candidates strictly subsumed by a compatible, more specific one.
+      const maximal=candidates.filter(c=>!candidates.some(other=>other!==c&&
+        (!c.department||c.department===other.department)&&(!c.useCenter||c.useCenter===other.useCenter)&&
+        ((!c.department&&!!other.department)||(!c.useCenter&&!!other.useCenter))));
+      const id=JSON.stringify([row.sourceId,row.id]), chosen=requested.get(id);
+      if(chosen){
+        if(maximal.length<2 || !maximal.some(c=>c.department===chosen.department&&c.useCenter===chosen.useCenter)) fail(`来源${row.originalFile}第${row.originalRow}行的归属不属于当前合法候选，请重新选择。`);
+        requested.delete(id);effectiveRows.push({...row,department:chosen.department,useCenter:chosen.useCenter});
+      } else if(maximal.length>1){
+        ambiguities.push({sourceId:row.sourceId,rowId:row.id,originalFile:row.originalFile,originalRow:row.originalRow,amountCents:row.amountCents,applicant:row.applicant,costCenter:row.costCenter,legalEntity:row.legalEntity,purpose:row.purpose,department:row.department,useCenter:row.useCenter,candidates:maximal});
+      } else effectiveRows.push(row);
+    }
+    if(ambiguities.length)continue;
+    const components: InternalGroup[] = [];
+    for (const [index,effective] of effectiveRows.entries()) {
+      const row=rows[index];
+      let group = components.find(g => compatible(g.row, effective));
+      if (!group) {
+        const displayRow = { ...effective, department: departmentValue(effective.department), useCenter: departmentValue(effective.useCenter) };
+        group = { key: '', row: displayRow, legal: normalizeLegalEntity(row.legalEntity), rows: [], amount: 0, first: 0 };
+        components.push(group);
+      }
+      if (!group.row.department && departmentValue(effective.department)) group.row.department = effective.department;
+      if (!group.row.useCenter && departmentValue(effective.useCenter)) group.row.useCenter = effective.useCenter;
+      group.rows.push(row);
+      group.amount = add(group.amount, row.amountCents);
+      if (row.sourceId === ordered[0].id) group.first = add(group.first, row.amountCents);
+    }
+    for (const group of components) {
+      for(const field of ['department','useCenter'] as const) if(group.row[field]&&!group.rows.some(r=>departmentValue(r[field])===group.row[field])) fail(`部门归属选项没有相应来源记录，请重新选择。`);
+      group.key = rowKey(group.row); allGroups.push(group);
+    }
+  }
+  if(ambiguities.length){const e=new AllocationError('AMBIGUOUS_ASSIGNMENT','部分空部门记录可归入多个不同部门组，请逐行确认归属。');e.ambiguities=ambiguities;throw e;}
+  if(requested.size)fail('部门归属确认包含未知、失效或未使用的来源行，请刷新重试。');
   return { ordered, allGroups, exclusions, before, previous };
 }
 
@@ -295,7 +372,7 @@ function stableEntityBlocks<T extends { normalizedLegalEntity: NormalizedLegalEn
  * For every reachable total it stores the greatest first-source contribution, then
  * the fewest selected groups. Equal scores preserve earlier groups deterministically.
  */
-export function planAllocation(sources: Source[], priceCents: number, quantity: number, limits: AllocationLimits = {}): AllocationPlan {
+export function planAllocation(sources: Source[], priceCents: number, quantity: number, limits: AllocationLimits = {}, assignments: DepartmentAssignment[] = []): AllocationPlan {
   integer(priceCents, "单价", 1);
   integer(quantity, "数量", 1);
   const totalCents = priceCents * quantity;
@@ -305,7 +382,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
   integer(cap.maxDpCells, "状态计算上限", 1);
   integer(cap.maxRows, "记录计算上限", 1);
   if (quantity > cap.maxQuantity) throw new AllocationError("LIMIT_EXCEEDED", "目标数量超过已验证的计算上限，尚未判定能否精确分摊。请联系管理员。");
-  const inspected = inspectSources(sources, cap.maxRows);
+  const inspected = inspectSources(sources, cap.maxRows, assignments);
   const { ordered, allGroups, exclusions, before, previous } = inspected;
   const active = allGroups.map(group => ({ group, options: groupOptions(group.amount, priceCents, quantity) })).filter(x => x.options.max > 0 || x.options.full !== null);
   const dpCells = active.length * (quantity + 1);
@@ -405,7 +482,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
   if (missingCount) warnings.push(`${missingCount}条来源记录缺少必填信息，已排除本批分摊并完整保留余额。`);
   if (allGroups.some(g => !g.legal.recognized)) warnings.push("部分法律主体无法唯一识别公司代码，仅按原文精确匹配；开票资料需单独核实。");
   if (new Set(ordered.map(s => s.priority)).size !== ordered.length) warnings.push("有来源使用相同优先级，已按导入顺序稳定排列，请确认此顺序符合预期。");
-  return { status: "solved", priceCents, quantity, totalCents, availableCents, eligibleCents, usedCents: totalCents, remainingCents: availableCents - totalCents, groups, sourceUses, sourceSummaries, warnings, exclusions, proof: { method: "exact_dynamic_programming", exact: true, primaryObjective: "maximize_first_source_contribution", primaryValueCents: prevFirst[quantity], secondaryObjective: "minimize_group_count", secondaryValue: prevCount[quantity], activeGroups: active.length, dpCells } };
+  return { ruleVersion: "department-compat-v2", departmentAssignments: assignments.map(a=>({...a})), groupMembership:allGroups.map(g=>({key:g.key,rows:g.rows.map(r=>({sourceId:r.sourceId,rowId:r.id,amountCents:r.amountCents}))})), status: "solved", priceCents, quantity, totalCents, availableCents, eligibleCents, usedCents: totalCents, remainingCents: availableCents - totalCents, groups, sourceUses, sourceSummaries, warnings, exclusions, proof: { method: "exact_dynamic_programming", exact: true, primaryObjective: "maximize_first_source_contribution", primaryValueCents: prevFirst[quantity], secondaryObjective: "minimize_group_count", secondaryValue: prevCount[quantity], conditionalOnConfirmedDepartmentAssignments:true, activeGroups: active.length, dpCells } };
 }
 
 export interface AllocationValidation {
@@ -426,7 +503,28 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
   const exclusionsKey = (items: AllocationExclusion[]) => JSON.stringify(items.map(e => [e.sourceId,e.rowId,e.originalFile,e.originalRow,e.amountCents,e.reason]));
   try {
     integer(priceCents, "单价", 1); integer(quantity, "数量", 1); integer(priceCents * quantity, "目标金额", 1);
-    const { ordered, allGroups, before, previous, exclusions } = inspectSources(sources, DEFAULT_LIMITS.maxRows);
+    check(plan.ruleVersion === "department-compat-v2", "批次使用旧分组规则，请重新试算并进行双重核验。");
+    const { ordered, allGroups, before, previous, exclusions } = inspectSources(sources, DEFAULT_LIMITS.maxRows,plan.departmentAssignments);
+    const membershipKey=(groups:typeof plan.groupMembership)=>JSON.stringify(groups.map(g=>[g.key,g.rows.map(r=>[r.sourceId,r.rowId,r.amountCents])]));
+    check(Array.isArray(plan.groupMembership)&&membershipKey(plan.groupMembership)===membershipKey(allGroups.map(g=>({key:g.key,rows:g.rows.map(r=>({sourceId:r.sourceId,rowId:r.id,amountCents:r.amountCents}))}))),"冻结的全部来源行归组与来源重算不一致。");
+    // Separate replay of *all* eligible original rows, including unused
+    // balances, without using the internal grouping map as source evidence.
+    const originalRows=new Map<string,SourceRow>();
+    for(const source of sources)for(const row of source.rows)if(!row.historicUsed&&row.amountCents>0&&REQUIRED_FIELDS.every(field=>nonempty(row[field])))originalRows.set(JSON.stringify([source.id,row.id]),row);
+    const assignedRows=new Set<string>();
+    if(Array.isArray(plan.groupMembership))for(const membership of plan.groupMembership){
+      const originals:SourceRow[]=[];
+      for(const ref of membership.rows){
+        const id=JSON.stringify([ref.sourceId,ref.rowId]), original=originalRows.get(id);
+        check(!!original&&!assignedRows.has(id),"来源行不存在或被重复分组。");
+        if(original){check(original.amountCents===ref.amountCents,"冻结来源行金额不一致。");originals.push(original);assignedRows.add(id);}
+      }
+      if(!originals.length){check(false,"分组缺少来源原始行。");continue;}
+      const first=originals[0];
+      check(originals.every(row=>requiredKey(row)===requiredKey(first)),"同组申领人、成本中心、主体或用途不一致。");
+      for(const field of ['department','useCenter'] as const)check(new Set(originals.map(row=>departmentValue(row[field])).filter(Boolean)).size<=1,`同组${field}存在冲突的非空值。`);
+    }
+    check(assignedRows.size===originalRows.size,"不是每一条可参与来源行都被唯一归组。");
     const available = sum([...before.values()]);
     const rawGroups = new Map(allGroups.map(g => [g.key, g]));
     const actualUses = new Map<string, SourceUse>();
@@ -435,15 +533,14 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
     let actualTotal = 0;
     let actualQuantity = 0;
     for (const group of plan.groups) {
-      // Independently check source authorization without relying on group filtering.
-      for (const use of group.sourceUses) {
-        const usedSource = sources.find(s => s.id === use.sourceId);
-        const usedRow = usedSource?.rows.find(r => r.id === use.rowId);
-        check(!!usedRow && (nonempty(usedRow.department) || usedSource?.allowBlankDepartment === true), "使用了未经该来源授权的空申领部门记录。");
-      }
       const raw = rawGroups.get(group.key);
       check(!!raw, "选用了不存在或字段不完整的分组。");
       if (!raw) continue;
+      for (const field of ["department", "useCenter"] as const) {
+        const unique = new Set(raw.rows.map(row => departmentValue(row[field])).filter(Boolean));
+        check(unique.size <= 1, `同组${field}存在不同非空值。`);
+        check(group[field] === (unique.values().next().value ?? ""), `开票${field}不是唯一非空值。`);
+      }
       check(!selectedKeys.has(group.key), "同一分组被重复列入。");
       selectedKeys.add(group.key);
       check(Number.isSafeInteger(group.quantity) && group.quantity > 0, "分组数量不是正整数。");
@@ -496,6 +593,7 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
     const expectedOrder = stableEntityBlocks(allGroups.filter(g => selectedKeys.has(g.key)).map(g => ({ key: g.key, normalizedLegalEntity: g.legal }))).map(g => g.key);
     check(JSON.stringify(plan.groups.map(g => g.key)) === JSON.stringify(expectedOrder), "同一法律主体未稳定连续列示。");
     check(plan.proof.primaryValueCents === perSource.get(ordered[0].id) && plan.proof.secondaryValue === plan.groups.length, "求解证明中的目标值与实际金额不一致。");
+    check(plan.proof.conditionalOnConfirmedDepartmentAssignments === true,"归属确认条件未绑定最优性说明。");
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
