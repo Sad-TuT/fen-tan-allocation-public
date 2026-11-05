@@ -5,8 +5,18 @@ import { registerHooks } from 'node:module';
 globalThis.__aiTest = { calls: [], mode: 'success', version: 27 };
 process.env.DEEPSEEK_API_KEY = 'synthetic-test-key-not-for-external-use';
 globalThis.fetch = async (_url, request) => {
+  if (globalThis.__aiTest.mode === 'timeout') throw new Error('synthetic timeout');
   globalThis.__aiTest.latestPrompt = JSON.parse(request.body);
-  return Response.json({choices: [{ message: { content: JSON.stringify(globalThis.__aiTest.mode === 'precheck' ? {summary:'测试', risks:[]} : {product:'测试商品', unitPrice:globalThis.__aiTest.mode === 'array-price' ? [20] : '20', quantity:globalThis.__aiTest.mode === 'fractional' ? 1.7 : globalThis.__aiTest.mode === 'boolean' ? true : 3}) } }]});
+  const draft = {
+    product: '测试商品',
+    unitPrice: globalThis.__aiTest.mode === 'array-price' ? [20] : '20',
+    quantity: globalThis.__aiTest.mode === 'fractional' ? 1.7 : globalThis.__aiTest.mode === 'boolean' ? true : 3,
+    ...(globalThis.__aiTest.mode === 'tampered-plan' ? {
+      plan: { totalCents: 1, groups: [{ usedCents: 1 }] },
+      simulation: { version: 999, totalCents: 1 },
+    } : {}),
+  };
+  return Response.json({choices: [{ message: { content: JSON.stringify(globalThis.__aiTest.mode === 'precheck' ? {summary:'测试', risks:[]} : draft) } }]});
 };
 
 const toModule = source => ({ url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true });
@@ -20,7 +30,7 @@ registerHooks({ resolve(specifier, context, next) {
       globalThis.__aiTest.calls.push(args);
       if(globalThis.__aiTest.mode === 'ambiguous') { const e = new Error('需确认'); e.code='AMBIGUOUS_ASSIGNMENT'; throw e; }
       if(globalThis.__aiTest.mode === 'stale') throw new Error('余额版本已变化，请刷新后重新试算。');
-      return {plan:{groups:[],totalCents:6000,quantity:3}};
+      return {version:27,product:args[0],priceCents:2000,plan:{groups:[],totalCents:6000,quantity:3,priceCents:2000}};
     };
   `);
   return next(specifier, context);
@@ -32,7 +42,26 @@ test('AI draft trial uses the same captured workspace version and never supplies
   const result = await aiParseDraft('测试输入', 'test-user-success');
   assert.deepEqual(globalThis.__aiTest.calls.at(-1), ['测试商品', '20.00', 3, 27]);
   assert.deepEqual(result.plan, {groups:0,totalCents:6000,quantity:3});
+  assert.deepEqual(result.simulation, {version:27,plan:{groups:[],totalCents:6000,quantity:3,priceCents:2000},product:'测试商品',priceCents:2000,assignments:[]});
   assert.equal(result.warning, null);
+});
+
+test('AI financial fields are ignored and the trusted solver owns the plan', async () => {
+  globalThis.__aiTest.mode = 'tampered-plan';
+  const before = globalThis.__aiTest.calls.length;
+  const result = await aiParseDraft('测试输入', 'test-user-tampered');
+  assert.equal(globalThis.__aiTest.calls.length, before + 1);
+  assert.deepEqual(result.plan, {groups:0,totalCents:6000,quantity:3});
+  assert.equal(result.simulation?.version, 27);
+  assert.equal(result.simulation?.plan.totalCents, 6000);
+  assert.notEqual(result.simulation?.plan.totalCents, 1);
+});
+
+test('DeepSeek timeout returns a safe retriable error without invoking the solver', async () => {
+  globalThis.__aiTest.mode = 'timeout';
+  const before = globalThis.__aiTest.calls.length;
+  await assert.rejects(() => aiParseDraft('测试输入', 'test-user-timeout'), /连接超时/);
+  assert.equal(globalThis.__aiTest.calls.length, before);
 });
 
 test('AI draft asks for manual confirmation when department assignment is ambiguous', async () => {

@@ -7,9 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import type { AllocationPlan, DepartmentAssignment } from "./lib/allocation";
 
 type Draft = { product: string; price: string; quantity: number };
-type DraftResult = { draft: Draft; note: string; plan: { groups: number; totalCents: number; quantity: number } | null; warning: string | null };
+type AgentSimulation = {
+  version: number;
+  product: string;
+  priceCents: number;
+  assignments: DepartmentAssignment[];
+  plan: AllocationPlan;
+};
+type DraftResult = { draft: Draft; note: string; plan: { groups: number; totalCents: number; quantity: number } | null; warning: string | null; simulation: AgentSimulation | null };
 type Risk = { severity: "high" | "medium" | "low"; title: string; detail: string; evidence: string };
 
 const money = (cents: number) => new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cents / 100);
@@ -30,8 +38,10 @@ const SEVERITY: Record<Risk["severity"], { label: string; className: string }> =
   low: { label: "低", className: "ai-risk-low" },
 };
 
-// Fills the product form only. The simulate/prepare/review path stays intact.
-export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disabled: boolean; onApply: (draft: Draft) => void; embedded?: boolean }) {
+// DeepSeek interprets the request and schedules the trusted exact solver. Any
+// financial fields returned by the model are ignored; only validated solver
+// output may populate the dashboard.
+export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disabled: boolean; onApply: (draft: Draft, simulation: AgentSimulation | null) => void; embedded?: boolean }) {
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -58,32 +68,33 @@ export function AiDraftAssistant({ disabled, onApply, embedded = false }: { disa
         <Textarea id="ai-description" rows={3} maxLength={1000} disabled={disabled || busy} placeholder="例如：流苏毯，单价 59 元，数量 1500，总额 88500 元" value={description} onChange={(event) => setDescription(event.target.value)} />
       </div>
       <div className="ai-actions">
-        <Button type="submit" disabled={disabled || busy || !description.trim()}>{busy ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}{busy ? "DeepSeek 正在解析…" : "识别商品参数"}</Button>
-        <p className="field-note">DeepSeek 只把描述整理为商品名称、单价和数量；金额计算、双重复核和入账门禁仍由网站执行。</p>
+        <Button type="submit" disabled={disabled || busy || !description.trim()}>{busy ? <LoaderCircle className="animate-spin" size={16} /> : <Sparkles size={16} />}{busy ? "DeepSeek 正在规划与试算…" : "DeepSeek 自动分摊"}</Button>
+        <p className="field-note">DeepSeek 理解指令并调度精确分摊；每条来源、金额、余款和数量均由网站整数分校验器复核后才可生成 Excel。</p>
       </div>
     </form>
     {error && <p className="ai-error"><CircleAlert size={15} />{error.replace(/[。！？]+$/, "")}。你仍可在下方手动填写，不影响继续处理。</p>}
     {result && <div className="ai-result">
-      <div className="ai-result-title"><Badge className="status-blue">识别完成</Badge><span>请先核对，再应用到下方表单</span></div>
+      <div className="ai-result-title"><Badge className="status-blue">{result.simulation ? "方案已通过试算" : "参数已识别"}</Badge><span>{result.simulation ? "DeepSeek 规划完成，请核对精确结果" : "请核对后补充或确认部门归属"}</span></div>
       <div className="ai-fields">
         <div><span>商品名称</span><strong>{result.draft.product}</strong></div>
         <div><span>单价</span><strong className="numeric">{money(Number(result.draft.price) * 100)}</strong></div>
         <div><span>数量</span><strong className="numeric">{result.draft.quantity}</strong></div>
       </div>
-      {result.plan && <p className="ai-ok"><CircleCheck size={15} />预试算可行：{result.plan.groups} 个分组，合计 {money(result.plan.totalCents)}。</p>}
+      {result.plan && <p className="ai-ok"><CircleCheck size={15} />精确试算通过：{result.plan.groups} 个分组，合计 {money(result.plan.totalCents)}。</p>}
       {result.warning && <p className="ai-warning"><CircleAlert size={15} />{result.warning}</p>}
       {result.note && <p className="field-note">{result.note}</p>}
-      <Button variant="outline" onClick={() => { onApply(result.draft); setResult(null); setDescription(""); }}>应用到商品表单<ArrowRight size={15} /></Button>
+      <Button variant="outline" onClick={() => { onApply(result.draft, result.simulation); setResult(null); setDescription(""); }}>{result.simulation ? "采用方案并查看明细" : "填入参数并继续确认"}<ArrowRight size={15} /></Button>
     </div>}
   </>;
 
   if (embedded) return <div className="ai-entry">
-    <div className="ai-entry-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><div className="inline-heading"><h3>AI 快速录入</h3><Badge variant="outline">DeepSeek 辅助</Badge></div><p>可直接用日常语言输入；识别结果会先展示，不会自动试算或入账。</p></div></div>
+    <div className="ai-entry-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><div className="inline-heading"><h3>DeepSeek 自动分摊</h3><Badge variant="outline">网站内处理</Badge></div><p>输入商品、单价和数量。DeepSeek 完成理解与规划，网站精确校验后生成 Excel；正式入账仍须两名独立复核。</p></div></div>
+    <div className="ai-agent-stages" aria-label="DeepSeek 自动处理阶段"><span>理解指令</span><i /><span>生成方案</span><i /><span>逐分钱校验</span><i /><span>生成 Excel</span></div>
     {content}
   </div>;
 
   return <Card className="ai-card">
-    <CardHeader><div className="ai-card-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><CardTitle>智能录入</CardTitle><CardDescription>用一句话描述这一批，模型只帮你填参数，不会直接入账。</CardDescription></div></div></CardHeader>
+    <CardHeader><div className="ai-card-heading"><span className="ai-icon"><Sparkles size={18} /></span><div><CardTitle>DeepSeek 自动分摊</CardTitle><CardDescription>用一句话描述这一批，模型规划后由网站校验并生成文件，不会直接入账。</CardDescription></div></div></CardHeader>
     <CardContent>{content}</CardContent>
   </Card>;
 }

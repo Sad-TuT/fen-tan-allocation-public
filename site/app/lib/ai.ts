@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cents } from './spreadsheets';
 import { getBatch, simulate, stateSummary } from './workflow';
+import type { AllocationPlan, DepartmentAssignment } from './allocation';
 
 // The Key stays on the server: the browser only ever talks to /api/ai.
 const API_BASE = (process.env.DEEPSEEK_API_BASE || 'https://api.deepseek.com').trim();
@@ -103,11 +104,19 @@ const yuan = (valueCents: number) => (valueCents / 100).toFixed(2);
 const text = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 
 export type AiDraft = { product: string; price: string; quantity: number };
+export type AiSimulation = {
+  version: number;
+  plan: AllocationPlan;
+  product: string;
+  priceCents: number;
+  assignments: DepartmentAssignment[];
+};
 export type AiDraftResult = {
   draft: AiDraft;
   note: string;
   plan: { groups: number; totalCents: number; quantity: number } | null;
   warning: string | null;
+  simulation: AiSimulation | null;
 };
 
 // Turns a free-form sentence into the three fields the form already needs.
@@ -162,15 +171,19 @@ export async function aiParseDraft(input: string, userId: string): Promise<AiDra
   const price = yuan(priceCents);
   let plan: AiDraftResult['plan'] = null;
   let warning: string | null = null;
+  let simulation: AiSimulation | null = null;
   try {
     const result = await simulate(product, price, quantity, summary.version);
     plan = { groups: result.plan.groups.length, totalCents: result.plan.totalCents, quantity: result.plan.quantity };
+    // Model output is limited to the three product parameters above. The
+    // financial plan below comes only from the trusted integer-cent solver.
+    simulation = { ...result, assignments: [] };
   } catch (error) {
     warning = error && typeof error === 'object' && 'code' in error && error.code === 'AMBIGUOUS_ASSIGNMENT'
       ? '部分空部门记录有多个归属，请将商品信息填入表单，在试算中确认部门归属。'
       : error instanceof Error ? error.message : '试算未通过。';
   }
-  return { draft: { product, price, quantity }, note: text(data.note, 200), plan, warning };
+  return { draft: { product, price, quantity }, note: text(data.note, 200), plan, warning, simulation };
 }
 
 export type AiRisk = { severity: 'high' | 'medium' | 'low'; title: string; detail: string; evidence: string };

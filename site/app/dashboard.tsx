@@ -39,7 +39,7 @@ const NAV: { id: View; title: string; icon: typeof LayoutDashboard }[] = [
 ];
 const DESCRIPTIONS: Record<View, string> = {
   overview: "查看共享余额与批次进度，接续每一笔分摊。",
-  new: "按五步完成：输入商品、精确试算、生成文件、独立复核、确认入账。",
+  new: "DeepSeek 自动规划与试算，生成 Excel 后由两名独立复核，再确认入账。",
   ai: "基于当前来源余额与最近批次回答账目疑问。",
   sources: "保留每份来源的身份、优先级与累计使用记录。",
   tax: "统一管理开票资料，按法律主体名称和代码精确匹配。",
@@ -375,19 +375,26 @@ export default function Dashboard({ user }: { user: User }) {
           {!sources.length && <Alert className="soft-notice"><CircleAlert /><AlertTitle>先导入金额来源</AlertTitle><AlertDescription>新批次默认使用共享账簿的当前余额。<Button variant="link" size="sm" onClick={() => go("sources")}>去导入<ArrowRight size={14} /></Button></AlertDescription></Alert>}
           <div className="workflow-step-heading">
             <span className="workflow-step-number">01</span>
-            <div><h2>录入本批商品</h2><p>可以交给 DeepSeek 识别，也可以直接填写。识别出的参数需要你核对后才能试算。</p></div>
+            <div><h2>交给 DeepSeek 处理</h2><p>输入本批要求，DeepSeek 自动规划精确分摊；网站复核通过后生成 Excel。也可以手动填写参数。</p></div>
             <Badge className={draftProgress.stage > 1 ? "status-green" : "status-blue"}>{draftProgress.stage > 1 ? "已完成" : draftProgress.nextLabel}</Badge>
           </div>
           <div className="new-grid">
             <Card className="form-card guided-form-card">
               <CardHeader><CardTitle>商品参数</CardTitle><CardDescription>网站会用整数分计算，单价和数量必须精确达到目标金额。</CardDescription></CardHeader>
               <CardContent>
-                {canWrite && <AiDraftAssistant embedded disabled={!sources.length || !!busy} onApply={(draft) => {
+                {canWrite && <AiDraftAssistant embedded disabled={!sources.length || !!busy} onApply={(draft, aiSimulation) => {
                   setProduct(draft.product);
                   setPrice(draft.price);
                   setQuantity(String(draft.quantity));
                   clearTrial();
-                  requestAnimationFrame(() => document.getElementById("product")?.focus());
+                  if (aiSimulation) {
+                    setSimulation(aiSimulation);
+                    setConfirmedAssignments(aiSimulation.assignments);
+                    setAssignmentVersion(aiSimulation.version);
+                    setFlash({ kind: "success", title: "DeepSeek 方案已通过精确校验", message: `已规划${aiSimulation.plan.groups.length}个分组，上传本批模板后即可生成 Excel。` });
+                  } else {
+                    requestAnimationFrame(() => document.getElementById("product")?.focus());
+                  }
                 }} />}
                 <div className="manual-entry-divider"><span>或手动填写</span></div>
                 <form onSubmit={trial} className="form-stack">
