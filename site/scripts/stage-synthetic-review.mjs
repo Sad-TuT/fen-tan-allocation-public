@@ -32,7 +32,11 @@ await writeFile(path.join(input,'template.xlsx'),template);
 const workflow=await import(new URL('../app/lib/workflow.ts',import.meta.url).href);
 const persistence=await import(new URL('../app/lib/persistence.ts',import.meta.url).href);
 await workflow.importSource(source1,'source1.xlsx',0,'synthetic',{priority:1});
-await workflow.importSource(source2,'source2.xlsx',1,'synthetic',{priority:2});
+await workflow.importSource(source2,'source2.xlsx',1,'synthetic',{
+  priority:2,
+  independentConfirmed:true,
+  sourceReference:'SYNTHETIC-SOURCE-2',
+});
 await workflow.importTax(tax,'tax.xlsx',2,'synthetic');
 const batch=await workflow.prepareBatch({product:'合成测试商品',price:'33',quantity:3,version:3},template,'template.xlsx','synthetic');
 const bundle=await workflow.reviewBundle(batch.id);
