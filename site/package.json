@@ -14,7 +14,7 @@
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "test": "node --experimental-strip-types --test tests/*.test.ts tests/backup.test.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.ts tests/backup.test.mjs tests/processing-jobs.test.mjs",
     "test:ai": "node --experimental-strip-types --test tests/ai-compat.test.mjs",
     "ledger:pull": "node scripts/ledger-sync.mjs"
   },

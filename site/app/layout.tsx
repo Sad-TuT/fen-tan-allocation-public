@@ -7,7 +7,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "分摊",
-  description: "管理金额来源、产品分摊、开票资料与连续批次余额。",
+  description: "每批导入资金与产品信息，查看分摊明细、候选文件和剩余资金。",
   // 私人财务工具，不允许被搜索引擎收录。
   robots: { index: false, follow: false, nocache: true },
   icons: {
