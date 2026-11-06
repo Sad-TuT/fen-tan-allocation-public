@@ -698,10 +698,9 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-import-heading p, .job-section-heading p, .job-chart-heading p { margin: 3px 0 0; color: #777980; font-size: 12px; line-height: 1.55; }
 .job-count-badge, .job-param-plan-badge { display: inline-flex; align-items: center; gap: 5px; color: #555761; font-size: 11px; background: #fff; }
 .job-upload-list { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 13px; }
-.job-upload-with-priority { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1fr) 120px; gap: 8px; }
-.job-upload-with-priority > label:last-child { display: grid; grid-template-columns: 1fr 64px; align-items: center; gap: 6px; padding: 0 9px; background: #f7f7f8; border: 1px solid #ebebed; border-radius: 9px; }
-.job-upload-with-priority > label:last-child span { color: #696b72; font-size: 11px; }
-.job-upload-with-priority > label:last-child input { height: 32px; text-align: right; border-color: #e7e7e9; background: #fff; font-variant-numeric: tabular-nums; }
+.job-source-upload-area { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 8px; border: 1px dashed #d6dce5; border-radius: 11px; background: #fbfcfe; transition: background .15s,border-color .15s; }
+.job-source-upload-area.is-dragging { border-color: #1677e8; background: #f0f7ff; }
+.job-source-upload-hint { grid-column: 1 / -1; padding: 0 4px 1px; color: #737780; font-size: 11px; line-height: 1.5; }
 .job-upload-control { position: relative; min-width: 0; min-height: 57px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; background: #fbfbfc; border: 1px solid #e9e9eb; border-radius: 9px; cursor: pointer; }
 .job-upload-control:hover { background: #f7faff; border-color: #cadff5; }
 .job-upload-control.has-file { background: #f8fafc; }
@@ -983,7 +982,7 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-import-heading h2, .job-section-heading h2 { font-size: 14px; }
   .job-import-heading p, .job-section-heading p { font-size: 10px; }
   .job-upload-list { grid-template-columns: minmax(0,1fr); gap: 7px; margin-top: 10px; }
-  .job-upload-with-priority { grid-template-columns: minmax(0,1fr) 116px; }
+  .job-source-upload-area { grid-template-columns: minmax(0,1fr) auto; }
   .job-upload-control { min-height: 53px; }
   .job-product-form { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
   .job-input-field:first-child { grid-column: 1 / -1; }
@@ -1050,11 +1049,8 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-main-nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); width: 100%; align-self: center; gap: 4px; }
   .job-main-nav > button { min-width: 0; width: 100%; min-height: 33px; padding-inline: 5px; font-size: 12px; }
   .job-main-nav > button > span { min-width: 17px; height: 17px; font-size: 10px; }
-  .job-upload-with-priority { grid-template-columns: minmax(0,1fr) 116px; grid-template-rows: auto 37px; }
-  .job-upload-with-priority > .job-upload-control { grid-column: 1 / -1; grid-row: 1; min-height: 58px; }
-  .job-source-paste-option { grid-column: 1; grid-row: 2; width: 100%; min-height: 36px; }
-  .job-upload-with-priority > .job-source-priority { grid-column: 2; grid-row: 2; grid-template-columns: minmax(0,1fr) 56px; gap: 4px; padding-inline: 7px; }
-  .job-source-priority > span { font-size: 11px; }
+  .job-source-upload-area { grid-template-columns: minmax(0,1fr); }
+  .job-source-paste-option { width: 100%; min-height: 36px; }
   .job-source-chart-row { grid-template-columns: minmax(88px,.95fr) minmax(48px,.7fr) minmax(130px,1fr); }
   .job-source-name > strong, .job-source-values, .job-source-values span { font-size: 11px; }
   .job-upload-action, .job-upload-text small { font-size: 11px; }
@@ -1062,7 +1058,6 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-assignment-row { grid-template-columns: minmax(0,1fr); }
 }
 
-.job-upload-with-priority { grid-template-columns: minmax(0,1fr) auto 120px; }
 .job-source-paste-option { align-self: center; min-height: 37px; padding-inline: 10px; font-size: 12px; white-space: nowrap; }
 
 .ai-card { margin-bottom: 28px; }

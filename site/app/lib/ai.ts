@@ -230,7 +230,7 @@ export async function aiWorkspaceMessage(input: {
       unitPriceYuan: source.priceCents === null ? null : yuan(source.priceCents),
       quantity: source.quantity,
       totalYuan: prepared ? yuan(prepared.totalCents) : null,
-      sources: source.sources.slice(0, 12).map((item) => ({ name: text(item.name, 120), priority: item.priority, availableYuan: yuan(item.availableCents), usedYuan: yuan(item.usedCents), rows: item.rowCount })),
+      sources: source.sources.slice(0, 12).map((item) => ({ name: text(item.name, 120), sourceNumber: item.priority, availableYuan: yuan(item.availableCents), usedYuan: yuan(item.usedCents), rows: item.rowCount })),
       taxRecordCount: source.taxCount,
       hasTemplate: source.hasTemplate,
       warnings: source.warnings.slice(0, 8).map((item) => text(item, 200)),

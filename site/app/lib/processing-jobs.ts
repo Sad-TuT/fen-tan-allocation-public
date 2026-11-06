@@ -18,6 +18,7 @@ import type { AppUser } from "./app-auth";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_JOB_FILES = 30;
+const MAX_JOB_SOURCES = 10;
 const MAX_PREVIEW_COLUMNS = 100;
 const MAX_PREVIEW_ROWS = 100;
 const MAX_PREVIEW_SEARCH_ROWS = 25_000;
@@ -273,7 +274,7 @@ export async function getProcessingJob(id: unknown, user: AppUser): Promise<Proc
   return publicJob(row, data);
 }
 export async function uploadProcessingJobFile(
-  input: { id: unknown; revision: unknown; role: unknown; name: unknown; bytes: Uint8Array; priority?: unknown; allowBlankDepartment?: unknown },
+  input: { id: unknown; revision: unknown; role: unknown; name: unknown; bytes: Uint8Array; sourceNumber?: unknown; priority?: unknown; allowBlankDepartment?: unknown },
   user: AppUser,
 ): Promise<ProcessingJob> {
   ensureWriter(user);
@@ -291,7 +292,7 @@ export async function uploadProcessingJobFile(
   const replay = data.files.find(file => file.role === role && file.sha256 === uploadSha && file.fileName === name);
   if (replay) {
     const selected = role === "source"
-      ? data.sources.some(source => source.id === replay.sourceId && source.priority === Number(input.priority) && source.allowBlankDepartment === (input.allowBlankDepartment === true))
+      ? data.sources.some(source => source.id === replay.sourceId && source.priority === Number(input.sourceNumber ?? input.priority) && source.allowBlankDepartment === (input.allowBlankDepartment === true))
       : role === "tax" ? data.taxFileId === replay.id
       : role === "tax-overrides" ? data.taxOverrideFileId === replay.id
       : data.templateFileId === replay.id;
@@ -303,18 +304,18 @@ export async function uploadProcessingJobFile(
   const changed = structuredClone(data);
   let file: StoredFile;
   if (role === "source") {
-    const priority = Number(input.priority);
-    if (!Number.isSafeInteger(priority) || priority < 1 || priority > 100) throw new ProcessingJobError("来源顺序必须为1到100的整数。");
-    if (changed.sources.some(source => source.priority === priority)) throw new ProcessingJobError("来源顺序重复，请选择尚未使用的顺序。");
-    const parsed = await parseSource(input.bytes, name, priority);
+    if (changed.sources.length >= MAX_JOB_SOURCES) throw new ProcessingJobError(`每批最多上传${MAX_JOB_SOURCES}份资金表。`, 413, "TOO_MANY_SOURCES");
+    const sourceNumber = Number(input.sourceNumber ?? input.priority);
+    if (!Number.isSafeInteger(sourceNumber) || sourceNumber !== changed.sources.length + 1) throw new ProcessingJobError("资金表来源编号已变化，请刷新页面后重新上传。");
+    const parsed = await parseSource(input.bytes, name, sourceNumber);
     if (changed.sources.some(source => source.sha256 === parsed.sha256 || source.id === parsed.id)) throw new ProcessingJobError("本批已经包含这份金额来源，请检查上传版本。");
     parsed.allowBlankDepartment = input.allowBlankDepartment === true;
     await assertDistinctSourceBalance(parsed, changed.sources);
     const compact = trimSource(parsed);
-    file = await writeFile(id, role, name, input.bytes, compact.id, priority);
+    file = await writeFile(id, role, name, input.bytes, compact.id, sourceNumber);
     compact.fileKey = file.key;
     compact.fileName = file.fileName;
-    changed.sources = [...changed.sources, compact].sort((a, b) => a.priority - b.priority);
+    changed.sources = [...changed.sources, compact];
     changed.productHistory = collectHistory(changed.sources);
   } else if (role === "tax") {
     const taxes = await parseTaxes(input.bytes);
@@ -346,7 +347,7 @@ export async function uploadProcessingJobFile(
   return publicJob(saved.row, saved.data);
 }
 export async function pasteSourceProcessingJob(
-  input: { id: unknown; revision: unknown; text: unknown; name?: unknown; priority?: unknown; ackAvailableOnly: unknown },
+  input: { id: unknown; revision: unknown; text: unknown; name?: unknown; sourceNumber?: unknown; priority?: unknown; ackAvailableOnly: unknown },
   user: AppUser,
 ): Promise<ProcessingJob> {
   ensureWriter(user);
@@ -354,13 +355,14 @@ export async function pasteSourceProcessingJob(
   if (typeof input.text !== "string" || !input.text.trim()) throw new ProcessingJobError("请粘贴表格中的资金明细。", 400, "EMPTY_PASTE");
   const bytes = new TextEncoder().encode(input.text);
   if (bytes.byteLength > 1_048_576) throw new ProcessingJobError("粘贴文本不能超过1MB。", 413, "PASTE_TOO_LARGE");
-  if (!Number.isSafeInteger(input.priority) || Number(input.priority) < 1 || Number(input.priority) > 100) throw new ProcessingJobError("来源顺序必须为1到100的整数。");
+  const sourceNumber = Number(input.sourceNumber ?? input.priority);
+  if (!Number.isSafeInteger(sourceNumber) || sourceNumber < 1 || sourceNumber > MAX_JOB_SOURCES) throw new ProcessingJobError(`每批最多导入${MAX_JOB_SOURCES}份资金表。`);
   const name = safeName(input.name ?? "粘贴的资金明细.xlsx");
   const workbook = await sourceFromClipboard(input.text);
   if (!(workbook instanceof Uint8Array) || workbook.byteLength > MAX_UPLOAD_BYTES) throw new ProcessingJobError("粘贴内容转换后的Excel文件超过10MB上限。", 413, "FILE_TOO_LARGE");
   return uploadProcessingJobFile({
     id: input.id, revision: input.revision, role: "source", name: name.toLowerCase().endsWith(".xlsx") ? name : name + ".xlsx",
-    bytes: workbook, priority: input.priority, allowBlankDepartment: false,
+    bytes: workbook, sourceNumber, allowBlankDepartment: false,
   }, user);
 }
 function makePlan(data: JobData, productValue: unknown, priceValue: unknown, quantityValue: unknown, assignmentsValue?: unknown) {
@@ -427,7 +429,7 @@ async function prepareFiles(jobId: string, data: JobData, plan: ReturnType<typeo
   for (const result of generated.files) {
     const role = mappedOutputRole(result.role);
     const bytes = role === "audit" ? await clarifyAudit(result.bytes) : result.bytes;
-    const name = "待人工核验_" + safeName(result.name);
+    const name = safeName(result.name);
     files.push(await writeFile(jobId, role, name, bytes, result.sourceId));
   }
   const nextSourceFiles: { sourceId: string; fileId: string }[] = [];
@@ -655,7 +657,7 @@ export async function getProcessingAIJobContext(id: unknown, userId: string, opt
   const context: ProcessingAIContext = {
     jobId: row.id, status: row.status, revision: Number(row.revision), product: data.product,
     priceCents: data.priceCents, quantity: data.quantity, totalCents: data.plan?.totalCents ?? null,
-    sources: sourceSummary(data.sources).map(source => ({
+      sources: sourceSummary(data.sources).map(source => ({
       name: source.name, priority: source.priority, availableCents: source.availableCents,
       usedCents: source.usedCents, rowCount: source.rowCount,
     })),

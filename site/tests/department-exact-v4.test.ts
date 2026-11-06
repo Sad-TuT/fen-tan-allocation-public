@@ -92,8 +92,8 @@ test("nonblank mismatches never merge and blank rows preserve original blank fie
   ])];
   const plan = planAllocation(sources, 100, 3);
   assert.equal(plan.groups.length, 3);
-  assert.equal(plan.groups[2].department, "");
-  assert.equal(plan.groups[2].useCenter, "");
+  const blankGroup = plan.groups.find(group => group.department === "" && group.useCenter === "");
+  assert.ok(blankGroup);
   assert.equal(validateAllocationPlan(sources, 100, 3, plan).valid, true);
 });
 

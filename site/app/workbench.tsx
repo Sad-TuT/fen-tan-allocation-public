@@ -131,34 +131,50 @@ function AllocationRows({ plan }: { plan: AllocationPlan }) {
 function FileImport({
   job, disabled, onUploaded,
 }: { job: ProcessingJob; disabled: boolean; onUploaded: (job: ProcessingJob) => void }) {
-  const [priorityOverride, setPriorityOverride] = useState("");
   const [busyFile, setBusyFile] = useState("");
   const [error, setError] = useState("");
+  const [draggingSources, setDraggingSources] = useState(false);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteAck, setPasteAck] = useState(false);
-  const priority = priorityOverride || String(Math.max(0, ...job.sources.map((source) => source.priority)) + 1);
-
-  async function upload(role: "source" | "tax" | "tax-overrides" | "template", file: File | undefined) {
-    if (!file) return;
+  async function upload(role: "source" | "tax" | "tax-overrides" | "template", file: File | undefined, revision = job.revision, sourceNumber?: number): Promise<ProcessingJob | null> {
+    if (!file) return null;
     setError("");
     const isOverrides = role === "tax-overrides";
     if (!(isOverrides ? file.name.toLowerCase().endsWith(".json") : file.name.toLowerCase().endsWith(".xlsx")) || file.size > (isOverrides ? 1024 * 1024 : 10 * 1024 * 1024)) {
       setError(isOverrides ? "请选择不超过 1 MB 的 .json 文件。" : "请选择不超过 10 MB 的 .xlsx 文件。");
-      return;
+      return null;
     }
     const label = role === "source" ? "本批资金" : role === "tax" ? "税务资料" : role === "tax-overrides" ? "税务修正" : "开票模板";
     const form = new FormData();
-    form.set("action", "upload"); form.set("id", job.id); form.set("revision", String(job.revision)); form.set("role", role); form.set("file", file);
-    if (role === "source") form.set("priority", priority);
+    form.set("action", "upload"); form.set("id", job.id); form.set("revision", String(revision)); form.set("role", role); form.set("file", file);
+    if (role === "source") form.set("sourceNumber", String(sourceNumber ?? Math.max(0, ...job.sources.map((source) => source.priority)) + 1));
     setBusyFile(role);
     try {
       const result = await apiRequest<JobResponse>("/api/jobs", { method: "POST", body: form });
-      if (role === "source") setPriorityOverride("");
       onUploaded(result.job);
+      return result.job;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : `${label}上传失败。`);
+      return null;
     } finally { setBusyFile(""); }
+  }
+
+  async function uploadSourceFiles(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (!selected.length) return;
+    if (job.sources.length + selected.length > 10) {
+      setError(`每批最多上传10份资金表；当前已有${job.sources.length}份，这次选了${selected.length}份。`);
+      return;
+    }
+    let revision = job.revision;
+    let sourceNumber = Math.max(0, ...job.sources.map((source) => source.priority)) + 1;
+    for (const file of selected) {
+      const uploaded = await upload("source", file, revision, sourceNumber);
+      if (!uploaded) break;
+      revision = uploaded.revision;
+      sourceNumber++;
+    }
   }
 
   async function importPastedSource() {
@@ -168,31 +184,35 @@ function FileImport({
     if (new TextEncoder().encode(pasteText).byteLength > 1024 * 1024) { setError("粘贴内容不能超过 1 MB，请减少明细行数。"); return; }
     setBusyFile("paste");
     try {
-      const result = await actionRequest<JobResponse>({ action: "paste-source", id: job.id, revision: job.revision, text: pasteText, priority: Number(priority), ackAvailableOnly: true });
-      setPriorityOverride(""); onUploaded(result.job); setPasteText(""); setPasteAck(false); setPasteOpen(false);
+      const sourceNumber = Math.max(0, ...job.sources.map((source) => source.priority)) + 1;
+      const result = await actionRequest<JobResponse>({ action: "paste-source", id: job.id, revision: job.revision, text: pasteText, sourceNumber, ackAvailableOnly: true });
+      onUploaded(result.job); setPasteText(""); setPasteAck(false); setPasteOpen(false);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "未能读取粘贴的表格内容。");
     } finally { setBusyFile(""); }
   }
 
-  const inputFile = (role: "source" | "tax" | "tax-overrides" | "template", label: string, current: string | null) => <label className={`job-upload-control ${current ? "has-file" : ""}`}>
+  const inputFile = (role: "source" | "tax" | "tax-overrides" | "template", label: string, current: string | null, multiple = false) => <label className={`job-upload-control ${current ? "has-file" : ""}`}>
     <span className="job-upload-icon">{busyFile === role ? <LoaderCircle size={17} className="animate-spin" /> : current ? <Check size={17} /> : <Upload size={17} />}</span>
     <span className="job-upload-text"><strong>{current || label}</strong><small>{current ? "已上传，可选择新文件替换" : role === "tax-overrides" ? "上传 .json，最大 1 MB" : "上传 Excel 文件，最大 10 MB"}</small></span>
     <span className="job-upload-action">{busyFile === role ? "正在读取" : current ? "替换" : "选择文件"}</span>
-    <input aria-label={current ? `替换${label}` : label} type="file" accept={role === "tax-overrides" ? ".json,application/json" : ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"} disabled={disabled || !!busyFile} onChange={(event) => { void upload(role, event.target.files?.[0]); event.currentTarget.value = ""; }} />
+    <input aria-label={current ? `替换${label}` : label} type="file" multiple={multiple} accept={role === "tax-overrides" ? ".json,application/json" : ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"} disabled={disabled || !!busyFile || (role === "source" && job.sources.length >= 10)} onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); if (role === "source") void uploadSourceFiles(files); else void upload(role, files[0]); event.currentTarget.value = ""; }} />
   </label>;
 
   return <div className="job-import">
-    <div className="job-import-heading"><div><h2>本批余额与资料</h2><p>每个新批次都必须重新上传余额表。这里是本批唯一的资金来源。</p></div>{job.sourceCount > 0 && <Badge variant="outline" className="job-count-badge">{job.sourceCount} 份资金来源</Badge>}</div>
+    <div className="job-import-heading"><div><h2>本批资金与资料</h2><p>本批可以上传多份资金表，系统会把它们放在一起计算，不分先后。</p></div><Badge variant="outline" className="job-count-badge">{job.sourceCount}/10 份资金表</Badge></div>
     <div className="job-upload-list">
-      <div className="job-upload-with-priority">{inputFile("source", `添加第 ${priority} 顺位余额表`, null)}<Button className="job-source-paste-option" type="button" variant="outline" size="sm" disabled={disabled || !!busyFile} onClick={() => setPasteOpen(true)}>粘贴Excel明细</Button><label className="job-source-priority"><span>来源顺序</span><Input aria-label="资金来源顺序" type="number" min="1" max="100" value={priority} onChange={(event) => setPriorityOverride(event.target.value)} disabled={disabled || !!busyFile} /></label></div>
-      {job.sources.map((source) => <div className="job-current-source" key={source.id}><span className="source-index">{source.priority}</span><span className="job-current-source-copy"><strong title={source.name}>{source.name}</strong><small>{source.rowCount.toLocaleString("zh-CN")} 行 · 本批可用 {money(source.availableCents)}</small></span><span className="job-current-source-balance">{money(source.availableCents)}</span></div>)}
+      <div className={`job-source-upload-area ${draggingSources ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDraggingSources(true); }} onDragLeave={() => setDraggingSources(false)} onDrop={(event) => { event.preventDefault(); setDraggingSources(false); void uploadSourceFiles(event.dataTransfer.files); }}>
+        {inputFile("source", "选择一份或多份资金表", null, true)}<Button className="job-source-paste-option" type="button" variant="outline" size="sm" disabled={disabled || !!busyFile || job.sources.length >= 10} onClick={() => setPasteOpen(true)}>粘贴Excel明细</Button>
+        <small className="job-source-upload-hint">也可以把文件拖到这里；支持一次多选，最多10份，每份不超过10 MB。来源等权选组，优先满足金额和余额规则，再尽量少用开票行；选定同组后，按来源编号和原行顺序记账，方便分别核对每份表。</small>
+      </div>
+      {job.sources.map((source) => <div className="job-current-source" key={source.id}><span className="source-index">来源{String(source.priority).padStart(2, "0")}</span><span className="job-current-source-copy"><strong title={source.name}>{source.name}</strong><small>{source.rowCount.toLocaleString("zh-CN")} 行 · 本批可用 {money(source.availableCents)}</small></span><span className="job-current-source-balance">{money(source.availableCents)}</span></div>)}
       {inputFile("tax", "税务主体表（可选）", job.taxFile?.name ?? null)}
       {inputFile("tax-overrides", "税务修正 JSON（可选）", job.taxOverrideFile?.name ?? null)}
       {inputFile("template", "开票模板（必需）", job.templateFile?.name ?? null)}
     </div>
     {error && <p className="job-inline-error" role="alert"><CircleAlert size={16} />{error}</p>}
-    <div className="job-upload-note"><LockKeyhole size={15} /><p>本批余额只属于这一批。下一批请重新上传本批生成的剩余表。</p></div>
+    <div className="job-upload-note"><LockKeyhole size={15} /><p>本批计算不会自动带入下一批。下一批请上传你确认要使用的资金表；如果资金已部分使用，请上传对应的最新剩余表，避免重复计算。</p></div>
     <Dialog open={pasteOpen} onOpenChange={(open) => { setPasteOpen(open); if (!open) { setPasteAck(false); setError(""); } }}><DialogContent className="job-paste-dialog"><DialogHeader><DialogTitle>粘贴本批剩余资金明细</DialogTitle><DialogDescription>从Excel复制含表头的单元格区域，再粘贴到下方。文本上限 1 MB。</DialogDescription></DialogHeader>
       <pre className="job-paste-example" aria-label="支持的Excel表头示例">申领人　申领部门　使用中心　成本中心　成本　费用承担法律主体　申领用途</pre>
       <label className="job-paste-input"><span>Excel单元格数据</span><textarea value={pasteText} maxLength={1024 * 1024} rows={9} disabled={!!busyFile} onChange={(event) => setPasteText(event.target.value)} placeholder="在此按 Ctrl+V 粘贴表头与明细" /> <small>复制Excel单元格后，用 Ctrl+V 粘贴；保持各列对应的分隔。</small></label>
@@ -498,7 +518,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
 
     {(job.status === "prepared" || job.status === "adopted") && <section className="job-candidate" aria-labelledby="job-candidate-heading">
       <div className="job-section-heading"><div><h2 id="job-candidate-heading">候选结果</h2><p>{job.status === "adopted" ? "本批已完成核对并归档。下一批需要重新上传余额表。" : "先浏览并核对本批所有文件，再确认本批是否完成。"}</p></div><JobStatus status={job.status} /></div>
-      <div className="job-candidate-files">{resultFiles.map((file) => <a key={file.id} className="job-candidate-file" href={`/api/jobs?id=${encodeURIComponent(job.id)}&download=${encodeURIComponent(file.id)}`}><span className="job-candidate-file-icon"><FileSpreadsheet size={17} /></span><span><strong>{file.fileName}</strong><small>{file.role === "invoice" ? "开票单" : file.role === "source-marked" ? `来源标红表${file.priority ? ` · 优先级 ${file.priority}` : ""}` : file.role === "source-remaining" ? `本批后剩余表${file.priority ? ` · 优先级 ${file.priority}` : ""}` : "分摊核对记录"} · {(file.size / 1024).toFixed(1)} KB</small></span><ArrowDownToLine size={16} /></a>)}</div>
+      <div className="job-candidate-files">{resultFiles.map((file) => <a key={file.id} className="job-candidate-file" href={`/api/jobs?id=${encodeURIComponent(job.id)}&download=${encodeURIComponent(file.id)}`}><span className="job-candidate-file-icon"><FileSpreadsheet size={17} /></span><span><strong>{file.fileName}</strong><small>{file.role === "invoice" ? "开票单" : file.role === "source-marked" ? `来源${file.priority ? String(file.priority).padStart(2, "0") : ""} · 已用金额标红` : file.role === "source-remaining" ? `来源${file.priority ? String(file.priority).padStart(2, "0") : ""} · 本批后剩余` : "分摊核对记录"} · {(file.size / 1024).toFixed(1)} KB</small></span><ArrowDownToLine size={16} /></a>)}</div>
       {job.taxPending > 0 && <p className="job-tax-warning"><CircleAlert size={16} />{job.taxPending} 项开票资料待核实。请查看开票单后再确认本批是否完成。</p>}
       {job.status === "prepared" && canWrite && currentRuleVersion && <div className="job-adopt-panel">
         <label className="job-adopt-confirm"><input type="checkbox" checked={adoptConfirmed} onChange={(event) => setAdoptConfirmed(event.target.checked)} /><span>我已核对上方全部结果文件，确认本批处理完成。</span></label>

@@ -49,15 +49,14 @@ test("manual department assignments are rejected and source values stay unchange
 });
 
 
-test("blank department rows remain usable independently and first source priority remains checked", () => {
+test("blank department rows remain usable independently and source numbering does not prioritize group selection", () => {
   const first = source("first", 1, [row(3300, { department: "" }), row(3300, { applicant: "有部门" })]);
   const second = { ...source("second", 2, [row(3300, { department: "" })]), allowBlankDepartment: true };
   const third = source("third", 3, [row(33000, { department: "" })]);
   const sources = [first, second, third];
   const plan = planAllocation(sources, 3300, 2);
-  assert.deepEqual(plan.sourceSummaries.map(s => s.usedCents), [6600, 0, 0]);
-  assert.equal(plan.sourceSummaries[0].remainingCents, 0);
-  assert.equal(plan.sourceSummaries[2].remainingCents, 33000);
+  assert.equal(plan.sourceSummaries.reduce((total, source) => total + source.usedCents, 0), 6600);
+  assert.ok(plan.sourceSummaries.every(source => source.differenceCents === 0));
   assert.equal(plan.exclusions.length, 0);
   assert.equal(validateAllocationPlan(sources, 3300, 2, plan).valid, true);
   const revoked = structuredClone(sources); revoked[1].allowBlankDepartment = false;
@@ -65,7 +64,7 @@ test("blank department rows remain usable independently and first source priorit
   assert.equal(validation.valid, true);
   const reordered = structuredClone(sources); reordered[0].priority = 3; reordered[1].priority = 1; reordered[2].priority = 2;
   const reorderedPlan = planAllocation(reordered, 3300, 2);
-  assert.equal(reorderedPlan.sourceSummaries[0].usedCents, 3300);
+  assert.deepEqual(reorderedPlan.groups.map(group => group.key).sort(), plan.groups.map(group => group.key).sort());
   assert.equal(reorderedPlan.sourceUses.reduce((total, use) => total + use.usedCents, 0), 6600);
 });
 
@@ -86,11 +85,14 @@ test("remainder is at least 300 yuan and no cents are rounded away", () => {
   assert.equal(planAllocation([source("s1", 1, [row(20025), row(19975)])], 3300, 3).groups.length, 1);
 });
 
-test("first-source use dominates fewer groups, and fewer groups breaks primary ties", () => {
+test("equal sources minimize selected business groups, with stable business-key ties", () => {
   const sources = [source("s1", 1, [row(3300, { applicant: "第一表" })]), source("s2", 2, [row(6600, { applicant: "独立大组" }), row(3300, { applicant: "独立小组" })])];
   const result = planAllocation(sources, 3300, 2);
-  assert.equal(result.sourceSummaries[0].usedCents, 3300);
-  assert.equal(result.groups.length, 2);
+  assert.deepEqual(result.sourceSummaries.map(s => s.usedCents), [0, 6600]);
+  assert.equal(result.groups.length, 1);
+  assert.equal(result.groups[0].applicant, "独立大组");
+  assert.equal(result.proof.objective, "minimize_selected_group_count");
+  assert.equal(result.proof.selectedGroupCount, 1);
   const tied = planAllocation([source("s1", 1, [row(6600, { applicant: "大组" }), row(3300, { applicant: "小组一" }), row(3300, { applicant: "小组二" })])], 3300, 2);
   assert.equal(tied.groups.length, 1);
   assert.equal(tied.groups[0].applicant, "大组");
@@ -150,7 +152,7 @@ test("resource limits report unverified scale rather than financial impossibilit
 test("current plans use the hardened rule version and old pending plans fail validation", () => {
   const sources = [source("s1", 1, [row(40000)])];
   const plan = planAllocation(sources, 3300, 3);
-  assert.equal(plan.ruleVersion, "department-exact-v4");
+  assert.equal(plan.ruleVersion, "department-exact-v6");
   assert.equal(validateAllocationPlan(sources, 3300, 3, plan).valid, true);
   const old = structuredClone(plan) as any;
   old.ruleVersion = "department-compat-v2";
@@ -177,11 +179,11 @@ test("independent replay rejects modified amounts, FIFO and source ledgers", () 
 });
 
 /** Deliberately simple exhaustive oracle, independent of the optimized DP. */
-function brute(groups: { amount: number; first: number }[], price: number, target: number): { first: number; count: number } | null {
-  let best: { first: number; count: number } | null = null;
-  const visit = (index: number, units: number, first: number, count: number) => {
+function brute(groups: { amount: number }[], price: number, target: number): { count: number } | null {
+  let best: { count: number } | null = null;
+  const visit = (index: number, units: number, count: number) => {
     if (index === groups.length) {
-      if (units === target && (!best || first > best.first || (first === best.first && count < best.count))) best = { first, count };
+      if (units === target && (!best || count < best.count)) best = { count };
       return;
     }
     const group = groups[index];
@@ -189,10 +191,10 @@ function brute(groups: { amount: number; first: number }[], price: number, targe
       const used = price * q;
       const remainder = group.amount - used;
       if (q && (used > group.amount || !(remainder === 0 || (remainder >= 30000 && remainder % 100 === 0)))) continue;
-      visit(index + 1, units + q, first + Math.min(used, group.first), count + Number(q > 0));
+      visit(index + 1, units + q, count + Number(q > 0));
     }
   };
-  visit(0, 0, 0, 0);
+  visit(0, 0, 0);
   return best;
 }
 
@@ -206,15 +208,13 @@ test("optimized DP matches an independent exhaustive oracle on 250 deterministic
     const count = 2 + random(3);
     const groups = Array.from({ length: count }, () => {
       const amount = price * (1 + random(8)) + (random(3) ? 0 : 30100 + random(3) * 25);
-      const first = random(amount + 1);
-      return { amount, first };
+      return { amount };
     });
-    const sources = [source("s1", 1, groups.filter(g => g.first > 0).map(g => row(g.first, { applicant: String(groups.indexOf(g)) }))), source("s2", 2, groups.filter(g => g.amount > g.first).map(g => row(g.amount - g.first, { applicant: String(groups.indexOf(g)) })))];
+    const sources = [source("s1", 1, groups.map(g => row(g.amount, { applicant: String(groups.indexOf(g)) })))];
     const expected = brute(groups, price, target);
     if (!expected) unsat(() => planAllocation(sources, price, target));
     else {
       const result = planAllocation(sources, price, target);
-      assert.equal(result.proof.primaryValueCents, expected.first, `case ${sample}: first-source optimum`);
       assert.equal(result.groups.length, expected.count, `case ${sample}: minimum groups`);
       assert.equal(validateAllocationPlan(sources, price, target, result).passed, true, `case ${sample}: source replay`);
     }
@@ -225,8 +225,8 @@ test("3000-unit target with 1000 legal groups uses bounded exact states", () => 
   const sources = [source("s1", 1, Array.from({ length: 1000 }, (_, n) => row(35000, { applicant: `员工${n}` })))];
   const result = planAllocation(sources, 3500, 3000);
   assert.equal(result.usedCents, 10500000);
-  assert.equal(result.proof.primaryValueCents, 10500000);
   assert.equal(result.groups.length, 300);
+  assert.equal(result.proof.selectedGroupCount, 300);
   assert.equal(result.proof.dpCells, 3001000);
   assert.equal(validateAllocationPlan(sources, 3500, 3000, result).passed, true);
 });

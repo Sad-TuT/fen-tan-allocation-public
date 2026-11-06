@@ -74,7 +74,6 @@ export interface AllocationGroup {
   purpose: string;
   normalizedLegalEntity: NormalizedLegalEntity;
   availableCents: number;
-  firstSourceAvailableCents: number;
   usedCents: number;
   quantity: number;
   qty: number;
@@ -104,7 +103,7 @@ export interface AllocationExclusion {
   reason: string;
 }
 
-export const ALLOCATION_RULE_VERSION = "department-exact-v4" as const;
+export const ALLOCATION_RULE_VERSION = "department-exact-v6" as const;
 
 export interface AllocationPlan {
   ruleVersion: typeof ALLOCATION_RULE_VERSION;
@@ -126,10 +125,9 @@ export interface AllocationPlan {
   proof: {
     method: "exact_dynamic_programming";
     exact: true;
-    primaryObjective: "maximize_first_source_contribution";
-    primaryValueCents: number;
-    secondaryObjective: "minimize_group_count";
-    secondaryValue: number;
+    objective: "minimize_selected_group_count";
+    selectedGroupCount: number;
+    tieBreak: "stable_business_group_key";
     blankDepartmentIndependent: true;
     activeGroups: number;
     dpCells: number;
@@ -240,15 +238,16 @@ interface InternalGroup {
   legal: NormalizedLegalEntity;
   rows: SourceRow[];
   amount: number;
-  first: number;
 }
 
 function inspectSources(sources: Source[], maxRows: number, assignments: DepartmentAssignment[] = []) {
   if (!Array.isArray(assignments)) fail("部门补填数据格式无效。");
   if (assignments.length) fail("当前规则禁止补填部门；申领部门或使用中心为空时，该来源行必须独立计算。");
   if (!Array.isArray(sources) || !sources.length) fail("请先导入至少一个金额来源。");
+  if (sources.length > 10) fail("每批最多允许10份资金来源。");
   const ordered = sources.map((s, index) => ({ s, index })).sort((a, b) => a.s.priority - b.s.priority || a.index - b.index).map(x => x.s);
   const sourceIds = new Set<string>();
+  const sourceNumbers = new Set<number>();
   const eligibleRows: SourceRow[] = [];
   const exclusions: AllocationExclusion[] = [];
   const before = new Map<string, number>();
@@ -258,7 +257,9 @@ function inspectSources(sources: Source[], maxRows: number, assignments: Departm
     if (!nonempty(source.id) || sourceIds.has(source.id)) fail("金额来源编号不能为空或重复。");
     sourceIds.add(source.id);
     if (!nonempty(source.name)) fail(`来源${source.id}缺少名称。`);
-    integer(source.priority, "来源优先级");
+    integer(source.priority, "来源编号", 1);
+    if (source.priority > 10 || sourceNumbers.has(source.priority)) fail("资金来源编号必须唯一且在1到10之间。");
+    sourceNumbers.add(source.priority);
     if (source.allowBlankDepartment !== undefined && typeof source.allowBlankDepartment !== "boolean") fail(`来源${source.name}的空申领部门授权必须为布尔值。`);
     if (source.balanceFingerprints !== undefined && (!Array.isArray(source.balanceFingerprints) || source.balanceFingerprints.length > 10000
       || source.balanceFingerprints.some(value => typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)))) {
@@ -328,15 +329,16 @@ function inspectSources(sources: Source[], maxRows: number, assignments: Departm
         legal: normalizeLegalEntity(row.legalEntity),
         rows: [],
         amount: 0,
-        first: 0,
       };
       exactGroups.set(key, group);
       allGroups.push(group);
     }
     group.rows.push(row);
     group.amount = add(group.amount, row.amountCents);
-    if (row.sourceId === ordered[0].id) group.first = add(group.first, row.amountCents);
   }
+  // Candidate group choice must not depend on upload order. This key is only a
+  // deterministic tie-break after minimizing the number of selected groups.
+  allGroups.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
   return { ordered, allGroups, exclusions, before, previous, effectiveAssignments: [] as DepartmentAssignment[] };
 }
 
@@ -370,10 +372,10 @@ function stableEntityBlocks<T extends { normalizedLegalEntity: NormalizedLegalEn
 }
 
 /**
- * Exact DP in quantity units. Sliding maxima evaluate arithmetic-progressive choices
+ * Exact DP in quantity units. Sliding minima evaluate arithmetic-progressive choices
  * in O(groups × quantity), rather than enumerating every previous-state/choice pair.
- * For every reachable total it stores the greatest first-source contribution, then
- * the fewest selected groups. Equal scores preserve earlier groups deterministically.
+ * It minimizes the number of selected business groups. Stable group keys determine
+ * tie outcomes; source numbering is used only for traceability and FIFO attribution.
  */
 export function planAllocation(sources: Source[], priceCents: number, quantity: number, limits: AllocationLimits = {}, assignments: DepartmentAssignment[] = []): AllocationPlan {
   integer(priceCents, "单价", 1);
@@ -386,7 +388,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
   integer(cap.maxRows, "记录计算上限", 1);
   if (quantity > cap.maxQuantity) throw new AllocationError("LIMIT_EXCEEDED", "目标数量超过已验证的计算上限，尚未判定能否精确分摊。请联系管理员。");
   const inspected = inspectSources(sources, cap.maxRows, assignments);
-    const { ordered, allGroups, exclusions, before, previous } = inspected;
+  const { ordered, allGroups, exclusions, before, previous } = inspected;
   const active = allGroups.map(group => ({ group, options: groupOptions(group.amount, priceCents, quantity) })).filter(x => x.options.max > 0 || x.options.full !== null);
   const dpCells = active.length * (quantity + 1);
   if (!Number.isSafeInteger(dpCells) || dpCells > cap.maxDpCells) throw new AllocationError("LIMIT_EXCEEDED", `本批需要${dpCells}个精确计算状态，超过已验证上限${cap.maxDpCells}；尚未判定能否精确分摊，不会用近似结果确认本批完成。`);
@@ -395,60 +397,48 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
   const capacity = sum(active.map(({ options }) => Math.max(options.max, options.full ?? 0)));
   if (eligibleCents < totalCents || capacity < quantity) throw new AllocationError("UNSATISFIABLE", `按当前分组、整除及余款规则，可用金额不足以精确完成${quantity}件；不能通过取整或改写金额凑齐。`);
 
-  let prevFirst = new Float64Array(quantity + 1).fill(-Infinity);
   let prevCount = new Int32Array(quantity + 1).fill(0x3fffffff);
-  prevFirst[0] = 0;
   prevCount[0] = 0;
   const traces: Int32Array[] = [];
   for (const { group, options } of active) {
-    const nextFirst = prevFirst.slice();
     const nextCount = prevCount.slice();
     const choices = new Int32Array(quantity + 1);
     const choose = (total: number, previousQuantity: number) => {
-      if (prevFirst[previousQuantity] === -Infinity) return;
-      const q = total - previousQuantity;
-      const primary = prevFirst[previousQuantity] + Math.min(priceCents * q, group.first);
+      if (prevCount[previousQuantity] === 0x3fffffff) return;
       const count = prevCount[previousQuantity] + 1;
-      if (primary > nextFirst[total] || (primary === nextFirst[total] && count < nextCount[total])) {
-        nextFirst[total] = primary;
+      if (count < nextCount[total]) {
         nextCount[total] = count;
-        choices[total] = q;
+        choices[total] = total - previousQuantity;
       }
     };
-    const range = (lower: number, upper: number, linear: boolean) => {
-      if (!lower || lower > upper) return;
+    const range = () => {
+      if (!options.min || options.min > options.max) return;
       const queues: number[][] = Array.from({ length: options.step }, () => []);
       const heads = new Int32Array(options.step);
-      const score = (x: number) => prevFirst[x] - (linear ? priceCents * x : 0);
-      for (let total = lower; total <= quantity; total++) {
-        const entering = total - lower;
+      for (let total = options.min; total <= quantity; total++) {
+        const entering = total - options.min;
         const residue = entering % options.step;
         const queue = queues[residue];
-        if (prevFirst[entering] !== -Infinity) {
+        if (prevCount[entering] !== 0x3fffffff) {
           while (queue.length > heads[residue]) {
             const last = queue[queue.length - 1];
-            if (score(entering) > score(last) || (score(entering) === score(last) && prevCount[entering] <= prevCount[last])) queue.pop();
+            // On equal group counts, prefer the larger prior quantity so earlier
+            // stable-key groups retain the units and this later group uses less.
+            if (prevCount[entering] <= prevCount[last]) queue.pop();
             else break;
           }
           queue.push(entering);
         }
-        while (heads[residue] < queue.length && queue[heads[residue]] < total - upper) heads[residue]++;
+        while (heads[residue] < queue.length && queue[heads[residue]] < total - options.max) heads[residue]++;
         if (heads[residue] < queue.length) choose(total, queue[heads[residue]]);
       }
     };
-    if (options.max) {
-      const boundary = Math.floor(group.first / priceCents);
-      const lowLast = options.min + Math.floor((Math.min(options.max, boundary) - options.min) / options.step) * options.step;
-      if (lowLast >= options.min) range(options.min, lowLast, true);
-      const highFirst = options.min + Math.max(0, Math.ceil((boundary + 1 - options.min) / options.step)) * options.step;
-      if (highFirst <= options.max) range(highFirst, options.max, false);
-    }
+    range();
     if (options.full !== null) for (let total = options.full; total <= quantity; total++) choose(total, total - options.full);
     traces.push(choices);
-    prevFirst = nextFirst;
     prevCount = nextCount;
   }
-  if (prevFirst[quantity] === -Infinity) throw new AllocationError("UNSATISFIABLE", `已完成精确计算，当前来源在既定规则下无法恰好分摊${quantity}件。请补充合规来源或确认调整本批参数。`);
+  if (prevCount[quantity] === 0x3fffffff) throw new AllocationError("UNSATISFIABLE", `已完成精确计算，当前来源在既定规则下无法恰好分摊${quantity}件。请补充合规来源或确认调整本批参数。`);
 
   const selected: { group: InternalGroup; quantity: number }[] = [];
   let remainingQuantity = quantity;
@@ -469,7 +459,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
       left -= used;
       if (!left) break;
     }
-    return { key: group.key, applicant: group.row.applicant, department: group.row.department, useCenter: group.row.useCenter, costCenter: group.row.costCenter, legalEntity: group.row.legalEntity, purpose: group.row.purpose, normalizedLegalEntity: group.legal, availableCents: group.amount, firstSourceAvailableCents: group.first, usedCents, quantity: q, qty: q, remainderCents: group.amount - usedCents, sourceUses };
+    return { key: group.key, applicant: group.row.applicant, department: group.row.department, useCenter: group.row.useCenter, costCenter: group.row.costCenter, legalEntity: group.row.legalEntity, purpose: group.row.purpose, normalizedLegalEntity: group.legal, availableCents: group.amount, usedCents, quantity: q, qty: q, remainderCents: group.amount - usedCents, sourceUses };
   }));
   const sourceUses = groups.flatMap(g => g.sourceUses);
   const sourceSummaries = ordered.map((source): SourceSummary => {
@@ -484,8 +474,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
   const missingCount = exclusions.filter(e => e.reason.startsWith("缺少必填信息")).length;
   if (missingCount) warnings.push(`${missingCount}条来源记录缺少必填信息，已排除本批分摊并完整保留余额。`);
   if (allGroups.some(g => !g.legal.recognized)) warnings.push("部分法律主体无法唯一识别公司代码，仅按原文精确匹配；开票资料需单独核实。");
-  if (new Set(ordered.map(s => s.priority)).size !== ordered.length) warnings.push("有来源使用相同优先级，已按导入顺序稳定排列，请确认此顺序符合预期。");
-  return { ruleVersion: ALLOCATION_RULE_VERSION, departmentAssignments: inspected.effectiveAssignments, groupMembership:allGroups.map(g=>({key:g.key,rows:g.rows.map(r=>({sourceId:r.sourceId,rowId:r.id,amountCents:r.amountCents}))})), status: "solved", priceCents, quantity, totalCents, availableCents, eligibleCents, usedCents: totalCents, remainingCents: availableCents - totalCents, groups, sourceUses, sourceSummaries, warnings, exclusions, proof: { method: "exact_dynamic_programming", exact: true, primaryObjective: "maximize_first_source_contribution", primaryValueCents: prevFirst[quantity], secondaryObjective: "minimize_group_count", secondaryValue: prevCount[quantity], blankDepartmentIndependent:true, activeGroups: active.length, dpCells } };
+  return { ruleVersion: ALLOCATION_RULE_VERSION, departmentAssignments: inspected.effectiveAssignments, groupMembership:allGroups.map(g=>({key:g.key,rows:g.rows.map(r=>({sourceId:r.sourceId,rowId:r.id,amountCents:r.amountCents}))})), status: "solved", priceCents, quantity, totalCents, availableCents, eligibleCents, usedCents: totalCents, remainingCents: availableCents - totalCents, groups, sourceUses, sourceSummaries, warnings, exclusions, proof: { method: "exact_dynamic_programming", exact: true, objective: "minimize_selected_group_count", selectedGroupCount: prevCount[quantity], tieBreak: "stable_business_group_key", blankDepartmentIndependent:true, activeGroups: active.length, dpCells } };
 }
 
 export interface AllocationValidation {
@@ -556,7 +545,7 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
       check(group.usedCents <= raw.amount, "分组金额超过可用来源。");
       const remainder = raw.amount - group.usedCents;
       check(remainder === 0 || (remainder >= 30_000 && remainder % 100 === 0), "合并分组的余款不合规。");
-      check(group.remainderCents === remainder && group.availableCents === raw.amount && group.firstSourceAvailableCents === raw.first, "分组余额或原额与来源不一致。");
+      check(group.remainderCents === remainder && group.availableCents === raw.amount, "分组余额或原额与来源不一致。");
       for (const field of ["applicant", "department", "useCenter", "costCenter", "purpose"] as const) check(group[field] === raw.row[field], `分组${field}与来源不一致。`);
       check(normalizeLegalEntity(group.legalEntity).key === raw.legal.key && group.normalizedLegalEntity.key === raw.legal.key && group.normalizedLegalEntity.name === raw.legal.name && group.normalizedLegalEntity.code === raw.legal.code && group.normalizedLegalEntity.recognized === raw.legal.recognized, "分组法律主体与来源不一致。");
       let left = group.usedCents;
@@ -567,7 +556,7 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
         left -= used;
       }
       check(left === 0, "按源行顺序无法覆盖本组使用金额。");
-      check(usesKey(group.sourceUses) === usesKey(expected), "源行使用或拆分不符合来源优先及FIFO规则。");
+      check(usesKey(group.sourceUses) === usesKey(expected), "源行使用或拆分不符合来源编号及原行顺序记账规则。");
       for (const use of group.sourceUses) {
         const id = JSON.stringify([use.sourceId, use.rowId]);
         check(!actualUses.has(id), "同一来源行被重复使用。");
@@ -592,14 +581,14 @@ export function validateAllocationPlan(sources: Source[], priceCents: number, qu
       if (!s) continue;
       const used = perSource.get(source.id)!;
       const remaining = before.get(source.id)! - used;
-      check(s.sourceId === source.id && s.name === source.name && s.priority === source.priority, "来源名称、顺序或优先级丢失。");
+      check(s.sourceId === source.id && s.name === source.name && s.priority === source.priority, "来源编号与文件对应关系丢失。");
       check(s.originalCents === source.originalCents && s.beforeCents === before.get(source.id) && s.previousUsedCents === previous.get(source.id), "来源原额、历史用额或期初金额不一致。");
       check(s.usedCents === used && s.remainingCents === remaining && remaining >= 0, "来源使用或余款不一致。");
       check(s.cumulativeUsedCents === add(previous.get(source.id)!, used) && s.differenceCents === 0 && source.originalCents === remaining + s.cumulativeUsedCents, "顶部原总额＝剩余＋累计已用未成立。");
     }
     const expectedOrder = stableEntityBlocks(allGroups.filter(g => selectedKeys.has(g.key)).map(g => ({ key: g.key, normalizedLegalEntity: g.legal }))).map(g => g.key);
     check(JSON.stringify(plan.groups.map(g => g.key)) === JSON.stringify(expectedOrder), "同一法律主体未稳定连续列示。");
-    check(plan.proof.primaryValueCents === perSource.get(ordered[0].id) && plan.proof.secondaryValue === plan.groups.length, "求解证明中的目标值与实际金额不一致。");
+    check(plan.proof.objective === "minimize_selected_group_count" && plan.proof.selectedGroupCount === plan.groups.length && plan.proof.tieBreak === "stable_business_group_key", "求解目标或分组数量记录不一致。");
     check(plan.proof.blankDepartmentIndependent === true,"空白部门独立分组规则未绑定最优性说明。");
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));

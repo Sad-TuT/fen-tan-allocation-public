@@ -124,7 +124,7 @@ export async function POST(request: Request) {
           if (!(file instanceof File) || !file.size || file.size > 10 * 1024 * 1024) throw new ProcessingJobError("文件为空或超过10MB上限。", 413, "FILE_TOO_LARGE");
           const job = await uploadProcessingJobFile({
             id, revision, role: form.get("role"), name: file.name, bytes: new Uint8Array(await file.arrayBuffer()),
-            priority: form.has("priority") ? Number(form.get("priority")) : undefined,
+            sourceNumber: form.has("sourceNumber") ? Number(form.get("sourceNumber")) : form.has("priority") ? Number(form.get("priority")) : undefined,
             allowBlankDepartment: String(form.get("allowBlankDepartment") ?? "") === "true",
           }, user);
           return reply({ job });
@@ -161,7 +161,7 @@ export async function POST(request: Request) {
     } else if (action === "paste-source") {
       job = await pasteSourceProcessingJob({
         id: body.id, revision: body.revision, text: body.text,
-        name: body.fileName, priority: body.priority, ackAvailableOnly: body.ackAvailableOnly,
+        name: body.fileName, sourceNumber: body.sourceNumber ?? body.priority, ackAvailableOnly: body.ackAvailableOnly,
       }, user);
     } else {
       throw new ProcessingJobError("不支持的任务操作。", 400, "UNSUPPORTED_ACTION");

@@ -252,7 +252,7 @@ export function AiWorkspaceAssistant({ jobId, userId, jobStatus = "draft", conte
 
       {!turns.length && <div className="rounded-lg bg-muted/40 px-4 py-5 text-sm">
         <p className="font-medium">可以这样开始</p>
-        <ul className="mt-2 space-y-1.5 text-muted-foreground"><li>“做一批折叠椅，单价120元，数量60件”</li><li>“这批用了多少第一来源余额？”</li><li>“当前表格这些部门的记录有什么异常？”</li></ul>
+        <ul className="mt-2 space-y-1.5 text-muted-foreground"><li>“做一批折叠椅，单价120元，数量60件”</li><li>“这批各份资金表分别用了多少？”</li><li>“当前表格这些部门的记录有什么异常？”</li></ul>
         <p className="mt-3 text-xs text-muted-foreground">AI只整理成待确认的参数草稿，金额由分摊引擎精确计算。</p>
       </div>}
 

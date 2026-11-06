@@ -118,6 +118,10 @@ test('file-processing batches preserve cents, hash-bound review, and require a f
   assert.equal(job.plan.remainingCents, 79800);
   assert.equal(job.files.filter(file => ['invoice', 'source-marked', 'source-remaining', 'audit'].includes(file.role)).length, 6);
   assert.equal(job.taxPending, 0);
+  const outputFiles = job.files.filter(file => ['invoice', 'source-marked', 'source-remaining', 'audit'].includes(file.role));
+  assert.ok(outputFiles.every(file => /^\d{8}_合成商品_批次[0-9a-f]{8}_/i.test(file.fileName)), 'outputs use date, product and batch id in the filename');
+  assert.ok(outputFiles.some(file => file.fileName.includes('_来源01_已用标红.xlsx')));
+  assert.ok(outputFiles.some(file => file.fileName.includes('_来源02_剩余.xlsx')));
 
   const context = await jobs.getProcessingAIJobContext(job.id, owner.userId, { includePrepared: true });
   assert.equal(context.prepared?.totalCents, 9900);
@@ -202,6 +206,18 @@ test('file-processing batches preserve cents, hash-bound review, and require a f
   assert.equal(secondSummary.summary.prepared, 0);
   assert.equal(secondSummary.summary.adopted, 2);
   assert.equal(secondSummary.summary.draft, 1);
+});
+
+test('a batch accepts at most 10 equal source files and rejects the 11th on the server', async () => {
+  const owner = await addUser('operator-source-cap');
+  let job = await jobs.createProcessingJob(owner);
+  for (let index = 1; index <= 10; index++) {
+    const source = await sourceFile(`员工${index}`, 400 + index, `资金来源${String(index).padStart(2, '0')}.xlsx`, `部门${index}`, `中心${index}`, `成本${index}`);
+    job = await upload(owner, job, 'source', source, index);
+  }
+  assert.equal(job.sources.length, 10);
+  const overflow = await sourceFile('员工11', 411, '资金来源11.xlsx', '部门11', '中心11', '成本11');
+  await assert.rejects(upload(owner, job, 'source', overflow, 11), /最多上传10份资金表/);
 });
 
 test('each row with a blank department remains an independent exact-allocation group', async () => {

@@ -62,7 +62,7 @@ export type ProcessingJob = ProcessingJobSummary & {
 
 export type ProcessingJobRequest =
   | { action: "create" }
-  | { action: "paste-source"; id: string; revision: number; text: string; fileName?: string; priority: number; ackAvailableOnly: true }
+  | { action: "paste-source"; id: string; revision: number; text: string; fileName?: string; sourceNumber: number; ackAvailableOnly: true }
   | { action: "simulate" | "prepare"; id: string; revision: number; product: string; price: string; quantity: number; assignments?: unknown }
   | { action: "adopt"; id: string; revision: number; ack: "I_REVIEWED_FILES"; fileHashes: Record<string, string> }
   | { action: "discard"; id: string; revision: number; reason: string }

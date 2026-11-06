@@ -252,7 +252,7 @@ test('tax branches, text identifiers, pending red fill and legal-entity blocks s
     row(33, { applicant: '一般乙', legalEntity: 'L100001 示例（北京）有限公司' }), row(33, { applicant: '简易', legalEntity: simple }),
     row(33, { applicant: '英文', legalEntity: english }), row(33, { applicant: '待补', legalEntity: pending }),
   ]);
-  const second = await sourceFile('第二来源.xlsx', 2, [row(700, { applicant: '未用记录' })]);
+  const second = await sourceFile('第二来源.xlsx', 2, [row(299.99, { applicant: '未用记录' })]);
   const taxBook = new ExcelJS.Workbook(), taxes = taxBook.addWorksheet('税务');
   taxes.addRow(['法律主体编码', '实际主体名称', '当前主体类型', '社会统一信用代码', '注册地址', '开户行', '银行基本户账号']);
   taxes.addRows([
@@ -263,7 +263,7 @@ test('tax branches, text identifiers, pending red fill and legal-entity blocks s
   const parsed = await io.parseTaxes(await workbookBytes(taxBook));
   assert.equal(parsed[0].credit, '001100000000000001'); assert.equal(parsed[0].account, '00012345678901234');
   const output = await generate([first, second], 3300, 6, parsed);
-  for (const [source, expectedBefore, expectedUsed, expectedRemaining] of [[first.source, 19800, 19800, 0], [second.source, 70000, 0, 70000]] as const) {
+  for (const [source, expectedBefore, expectedUsed, expectedRemaining] of [[first.source, 19800, 19800, 0], [second.source, 29999, 0, 29999]] as const) {
     const marked = (await open(output.files.find((x: any) => x.role === `${source.id}_marked`)!.bytes)).worksheets[0];
     const remaining = (await open(output.files.find((x: any) => x.role === `${source.id}_remaining`)!.bytes)).worksheets[0];
     assert.equal(sum(costs(marked)), expectedBefore); assert.equal(sum(costs(marked).filter(r => r.red)), expectedUsed); assert.equal(sum(costs(remaining)), expectedRemaining);
@@ -271,12 +271,12 @@ test('tax branches, text identifiers, pending red fill and legal-entity blocks s
   const file = output.files.find((x: any) => x.role === 'invoice')!;
   const ws = (await open(file.bytes)).worksheets[0];
   const names = Array.from({ length: 6 }, (_, i) => value(ws.getCell(i + 4, 1)));
-  assert.deepEqual(names, ['一般甲', '一般乙', '小规模', '简易', '英文', '待补']);
+  assert.deepEqual(names, ['一般乙', '一般甲', '小规模', '待补', '简易', '英文']);
   const expectedNormal = ['示例（北京）有限公司', '001100000000000001', '注册地址原文', '开户行原文', '00012345678901234', '', '专票'].join('\n');
   assert.equal(value(ws.getCell('G4')), expectedNormal); assert.equal(value(ws.getCell('G5')), expectedNormal);
-  assert.equal(value(ws.getCell('G6')), '001100000000000002'); assert.equal(value(ws.getCell('G7')), '001100000000000003');
-  assert.equal(value(ws.getCell('G8')), '形式发票'); assert.equal(value(ws.getCell('G9')) ?? '', '');
-  assert.equal((ws.getCell('G9').fill as ExcelJS.FillPattern).fgColor?.argb, 'FFFF0000');
+  assert.equal(value(ws.getCell('G6')), '001100000000000002'); assert.equal(value(ws.getCell('G8')), '001100000000000003');
+  assert.equal(value(ws.getCell('G9')), '形式发票'); assert.equal(value(ws.getCell('G7')) ?? '', '');
+  assert.equal((ws.getCell('G7').fill as ExcelJS.FillPattern).fgColor?.argb, 'FFFF0000');
   assert.equal(output.taxPending, 1); assert.equal(value(ws.getCell('K2')), 198); assert.equal(value(ws.getCell('J2')), 6);
   assert.equal(Array.from({ length: 6 }, (_, i) => exactCents(value(ws.getCell(i + 4, 5)))).reduce((a, b) => a + b, 0), 19800);
 });
@@ -348,7 +348,7 @@ test('nested and top-level tax scopes cannot hide one another',async()=>{
 
 test('identical rows are preserved as distinct source records and red rows after full use', async () => {
   const first = await sourceFile('第一来源.xlsx', 1, [row(66), row(66)]);
-  const second = await sourceFile('第二来源.xlsx', 2, [row(700, { applicant: '未用' })]);
+  const second = await sourceFile('第二来源.xlsx', 2, [row(299.99, { applicant: '未用' })]);
   const output = await generate([first, second], 3300, 4);
   const marked = (await open(output.files.find((x: any) => x.role === `${first.source.id}_marked`)!.bytes)).worksheets[0];
   const redRows = costs(marked).filter(r => r.red); assert.equal(redRows.length, 2); assert.deepEqual(redRows.map(r => r.amount), [6600, 6600]);
