@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
-import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, CircleHelp, ClipboardCheck, FileSpreadsheet, LoaderCircle, LockKeyhole, Plus, RefreshCw, Search, Settings2, Upload, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, CircleHelp, ClipboardCheck, FileSpreadsheet, LoaderCircle, LockKeyhole, Plus, RefreshCw, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { AiWorkspaceAssistant } from "./ai-panel";
 import { WorkspaceDataPreview, type VisibleData } from "./workspace-data-preview";
 import { Badge } from "@/components/ui/badge";
@@ -231,23 +231,49 @@ function EmptyWork({ onCreate, existing, onResume, disabled }: { onCreate: () =>
   </div>;
 }
 
-function JobTable({ jobs, selectedId, onOpen }: { jobs: ProcessingJobSummary[]; selectedId: string; onOpen: (id: string) => void }) {
+function JobTable({ jobs, selectedId, canDelete, onOpen, onDelete }: { jobs: ProcessingJobSummary[]; selectedId: string; canDelete: boolean; onOpen: (id: string) => void; onDelete: (job: ProcessingJobSummary) => void }) {
   if (!jobs.length) return <div className="job-history-empty"><FileSpreadsheet size={22} /><strong>还没有批次</strong><p>新建一次处理后，上传的余额、候选文件和完成状态会保存在这里。</p></div>;
-  return <div className="job-table-scroll"><Table className="job-history-table"><TableHeader><TableRow><TableHead>批次</TableHead><TableHead>输入来源</TableHead><TableHead className="text-right">目标金额</TableHead><TableHead className="text-right">数量</TableHead><TableHead>状态</TableHead><TableHead>最后更新</TableHead><TableHead /></TableRow></TableHeader><TableBody>{jobs.map((job) => <TableRow key={job.id} data-selected={selectedId === job.id}>
+  return <div className="job-table-scroll"><Table className="job-history-table"><TableHeader><TableRow><TableHead>批次</TableHead><TableHead>输入来源</TableHead><TableHead className="text-right">目标金额</TableHead><TableHead className="text-right">数量</TableHead><TableHead>状态</TableHead><TableHead>最后更新</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{jobs.map((job) => <TableRow key={job.id} data-selected={selectedId === job.id}>
     <TableCell><button type="button" className="job-history-open" onClick={() => onOpen(job.id)}><strong>{job.product || "未填写商品"}</strong><small>{job.id.slice(0, 8)}</small></button></TableCell>
-    <TableCell>{job.sourceCount} 份 · {job.fileCount} 个文件</TableCell><TableCell className="text-right numeric">{job.totalCents === null ? "—" : money(job.totalCents)}</TableCell><TableCell className="text-right numeric">{job.quantity === null ? "—" : quantityFormat(job.quantity)}</TableCell><TableCell><JobStatus status={job.status} /></TableCell><TableCell className="muted">{readableDate(job.updatedAt)}</TableCell><TableCell className="text-right"><Button type="button" variant="ghost" size="sm" onClick={() => onOpen(job.id)}>{selectedId === job.id ? "已打开" : "打开批次"}</Button></TableCell>
+    <TableCell>{job.sourceCount} 份 · {job.fileCount} 个文件</TableCell><TableCell className="text-right numeric">{job.totalCents === null ? "—" : money(job.totalCents)}</TableCell><TableCell className="text-right numeric">{job.quantity === null ? "—" : quantityFormat(job.quantity)}</TableCell><TableCell><JobStatus status={job.status} /></TableCell><TableCell className="muted">{readableDate(job.updatedAt)}</TableCell><TableCell><div className="job-history-actions"><Button type="button" variant="ghost" size="sm" onClick={() => onOpen(job.id)}>{selectedId === job.id ? "已打开" : "打开"}</Button>{canDelete && job.status !== "adopted" && <Button type="button" variant="ghost" size="sm" className="job-history-delete" onClick={() => onDelete(job)}><Trash2 size={13} />删除</Button>}</div></TableCell>
   </TableRow>)}</TableBody></Table></div>;
 }
 
-function HistoryView({ jobs, selectedId, query, onQuery, onOpen }: { jobs: ProcessingJobSummary[]; selectedId: string; query: string; onQuery: (value: string) => void; onOpen: (id: string) => void }) {
+function HistoryView({ jobs, selectedId, query, onQuery, onOpen, onNewBatch, canWrite, onDelete }: { jobs: ProcessingJobSummary[]; selectedId: string; query: string; onQuery: (value: string) => void; onOpen: (id: string) => void; onNewBatch: () => void; canWrite: boolean; onDelete: (job: ProcessingJobSummary) => Promise<void> }) {
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase("zh-CN"));
   const filtered = useMemo(() => jobs.filter((job) => `${job.product ?? ""} ${job.id}`.toLocaleLowerCase("zh-CN").includes(deferredQuery)), [jobs, deferredQuery]);
+  const [deleteTarget, setDeleteTarget] = useState<ProcessingJobSummary | null>(null);
+  const [deleteAcknowledged, setDeleteAcknowledged] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  function askToDelete(job: ProcessingJobSummary) {
+    setDeleteTarget(job); setDeleteAcknowledged(false); setDeleteError("");
+  }
+  async function confirmDelete() {
+    if (!deleteTarget || !deleteAcknowledged || deleteBusy) return;
+    setDeleteBusy(true); setDeleteError("");
+    try {
+      await onDelete(deleteTarget);
+      setDeleteTarget(null); setDeleteAcknowledged(false);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "删除批次失败，请刷新后重试。");
+    } finally { setDeleteBusy(false); }
+  }
   return <section className="job-content-view" aria-labelledby="job-history-heading">
     <div className="job-page-heading"><div><span className="job-page-kicker">批次记录</span><h1 id="job-history-heading">处理历史</h1><p>按批查找上传的余额、候选文件和完成状态。</p></div>
-      <label className="job-search"><Search size={16} /><span className="sr-only">搜索批次</span><Input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索商品名称或批次号" /></label>
+      <div className="job-history-tools"><Button type="button" size="sm" onClick={onNewBatch} disabled={!canWrite}><Plus size={15} />新建批次</Button><label className="job-search"><Search size={16} /><span className="sr-only">搜索批次</span><Input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索商品名称或批次号" /></label></div>
     </div>
-    <JobTable jobs={filtered} selectedId={selectedId} onOpen={onOpen} />
-    <p className="job-readonly-note">历史记录用于查阅批次关系。作废记录会保留，便于追踪余额来源。</p>
+    <JobTable jobs={filtered} selectedId={selectedId} canDelete={canWrite} onOpen={onOpen} onDelete={askToDelete} />
+    <p className="job-readonly-note">准备中、待核对和已作废批次可删除；已完成批次作为正式追溯记录，不能删除。</p>
+    <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open && !deleteBusy) { setDeleteTarget(null); setDeleteAcknowledged(false); setDeleteError(""); } }}>
+      <DialogContent className="job-delete-dialog">
+        <DialogHeader><DialogTitle>永久删除这个批次？</DialogTitle><DialogDescription>该操作会同时删除批次记录、上传资料和已生成文件，删除后无法恢复。</DialogDescription></DialogHeader>
+        {deleteTarget && <div className="job-delete-summary"><strong>{deleteTarget.product || "未填写商品"}</strong><span>批次 {deleteTarget.id.slice(0, 8)} · {deleteTarget.sourceCount} 份来源 · {deleteTarget.fileCount} 个文件</span></div>}
+        <label className="job-delete-ack"><input type="checkbox" checked={deleteAcknowledged} onChange={(event) => setDeleteAcknowledged(event.target.checked)} disabled={deleteBusy} /><span>我已核对批次号和内容，确认删除，且不需要保留这些资料。</span></label>
+        {deleteError && <p className="job-delete-error" role="alert"><CircleAlert size={15} />{deleteError}</p>}
+        <DialogFooter><Button type="button" variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>取消</Button><Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={!deleteAcknowledged || deleteBusy}>{deleteBusy ? <LoaderCircle size={15} className="animate-spin" /> : <Trash2 size={15} />}{deleteBusy ? "正在删除…" : "永久删除"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   </section>;
 }
 
@@ -329,6 +355,14 @@ export default function Dashboard({ user, onOpenAccount }: { user: SessionUser; 
     } catch (error) { setLoadError(error instanceof Error ? error.message : "无法新建批次，请重试。"); }
     finally { setCreating(false); }
   }
+  async function deleteJob(id: string, revision: number) {
+    await actionRequest<{ deleted: true; id: string }>({ action: "delete", id, revision });
+    if (job?.id === id || selectedId === id) {
+      setJob(null);
+      writeRoute("", "history");
+    }
+    await refreshJobs();
+  }
 
   function selectJob(id: string, targetView: View = "workspace") {
     setLoadError("");
@@ -368,7 +402,7 @@ export default function Dashboard({ user, onOpenAccount }: { user: SessionUser; 
         onChooseJob={() => writeRoute(job.id, "history")}
       /></div>}
       {!job && view === "workspace" && !pageLoading && <EmptyWork onCreate={() => void createJob()} existing={latestResumable} onResume={() => latestResumable && void selectJob(latestResumable.id)} disabled={!canWrite || creating || pageLoading} />}
-      {view === "history" && <HistoryView jobs={jobs} selectedId={selectedId} query={query} onQuery={setQuery} onOpen={(id) => selectJob(id)} />}
+      {view === "history" && <HistoryView jobs={jobs} selectedId={selectedId} query={query} onQuery={setQuery} onOpen={(id) => selectJob(id)} onNewBatch={() => void createJob()} canWrite={canWrite} onDelete={(target) => deleteJob(target.id, target.revision)} />}
       {view === "data" && <DataView jobs={jobs} job={job?.id === selectedId ? job : null} onSelectJob={(id) => selectJob(id, "data")} />}
       <footer className="job-app-footer"><span>分摊 · Allocation</span><span>每批重新上传余额 · 候选结果可核 · 完成由你确认</span></footer>
     </main>

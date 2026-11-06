@@ -77,6 +77,36 @@ async function getObject(key:string){
 }
 const localBucket={
  async get(key:string){return getObject(key);},
+ async delete(keys:string|string[]){
+   for(const key of Array.isArray(keys)?keys:[keys]){
+     try{await unlink(filePath(key));}
+     catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+   }
+ },
+ async list(options:{prefix?:string;cursor?:string;limit?:number}={}){
+   const prefix=options.prefix??'';
+   const root=path.join(dataDir(),'objects');
+   const keys:string[]=[];
+   const walk=(directory:string,relative:string)=>{
+     let entries;
+     try{entries=readdirSync(directory,{withFileTypes:true});}
+     catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return;throw e;}
+     for(const entry of entries){
+       if(entry.isSymbolicLink())continue;
+       const key=relative?`${relative}/${entry.name}`:entry.name;
+       if(entry.isDirectory())walk(path.join(directory,entry.name),key);
+       else if(entry.isFile()&&key.startsWith(prefix))keys.push(key);
+     }
+   };
+   walk(root,'');
+   keys.sort();
+   const offset=options.cursor===undefined?0:Number(options.cursor);
+   const limit=options.limit===undefined?1000:options.limit;
+   if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1)throw new Error('Invalid object list cursor.');
+   const page=keys.slice(offset,offset+limit);
+   const truncated=offset+page.length<keys.length;
+   return {objects:page.map(key=>({key})),truncated,cursor:truncated?String(offset+page.length):undefined};
+ },
  async put(key:string,value:Uint8Array,options:{httpMetadata:{contentType:string}}){
    const target=filePath(key),root=dataDir();
    await mkdir(root,{recursive:true,mode:0o700});

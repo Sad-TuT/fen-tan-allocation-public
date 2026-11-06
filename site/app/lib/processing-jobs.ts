@@ -550,6 +550,37 @@ export async function discardProcessingJob(input: { id: unknown; revision: unkno
   if (result[0].meta.changes !== 1 || result[1].meta.changes !== 1) throw new ProcessingJobError("本批任务已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
   return publicJob(await getRow(row.id, user), next);
 }
+async function deleteJobObjects(id: string): Promise<void> {
+  const prefix = objectPrefix(id) + "/";
+  let cursor: string | undefined;
+  do {
+    const page = await bucket().list({ prefix, cursor, limit: 1000 });
+    if (page.objects.length) await bucket().delete(page.objects.map(object => object.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+export async function deleteProcessingJob(input: { id: unknown; revision: unknown }, user: AppUser): Promise<{ deleted: true; id: string }> {
+  ensureWriter(user);
+  const id = validateId(input.id);
+  const revision = revisionNumber(input.revision);
+  const { row } = await loadJob(id, user);
+  if (row.status === "adopted") throw new ProcessingJobError("已完成批次不能删除；历史记录需要保留用于复核。", 409, "ADOPTED_JOB_CANNOT_BE_DELETED");
+  if (Number(row.revision) !== revision) throw new ProcessingJobError("本批任务已变化，请刷新后重试。", 409, "STALE_REVISION");
+  const deleted = await db().batch([
+    db().prepare("DELETE FROM processing_job_events WHERE job_id = ?").bind(row.id),
+    db().prepare("DELETE FROM processing_active_sources WHERE job_id = ?").bind(row.id),
+    db().prepare("DELETE FROM processing_jobs WHERE id = ? AND owner_id = ? AND revision = ? AND status = ? AND data_key = ?")
+      .bind(row.id, row.owner_id, revision, row.status, row.data_key),
+  ]);
+  if (deleted[2].meta.changes !== 1) throw new ProcessingJobError("本批任务已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
+  try {
+    await deleteJobObjects(id);
+  } catch {
+    // The database row is authoritative; orphaned objects are inaccessible
+    // without that row and can be removed by maintenance tooling.
+  }
+  return { deleted: true, id };
+}
 async function loadPreviewWorkbook(file: StoredFile, bytes: Uint8Array): Promise<ExcelJS.Workbook> {
   if (file.role === "tax-overrides") throw new ProcessingJobError("税务修正是JSON资料，请下载查看。", 415, "JSON_PREVIEW_UNSUPPORTED");
   validateXlsxArchive(bytes);

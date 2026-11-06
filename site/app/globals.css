@@ -772,6 +772,10 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-allocation-table [data-slot="table-cell"], .job-history-table [data-slot="table-cell"] { max-width: 230px; padding: 8px 10px; color: #383a41; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .job-allocation-table [data-slot="table-cell"]:nth-last-child(-n+3), .job-history-table [data-slot="table-cell"].numeric { white-space: nowrap; }
 .job-allocation-table [data-slot="table-row"]:hover, .job-history-table [data-slot="table-row"]:hover { background: #fafbfc; }
+.job-history-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; white-space: nowrap; }
+.job-history-actions [data-slot="button"] { min-height: 30px; padding-inline: 7px; font-size: 10px; }
+.job-history-actions .job-history-delete { color: #9b3c33; }
+.job-history-actions .job-history-delete:hover { color: #852c24; background: #fff1ef; }
 .job-show-groups { min-height: 31px; margin: 6px 0 0; padding-inline: 6px; color: #4f5c6d; font-size: 11px; }
 .job-show-groups svg { transition: transform 160ms ease-out; }
 .job-show-groups svg.rotate-180 { transform: rotate(180deg); }
@@ -866,6 +870,14 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-discarded-note { display: flex; align-items: center; gap: 7px; margin: 12px 0 0; color: #72747b; font-size: 11px; }
 .job-discard-dialog { max-width: min(480px, calc(100% - 32px)); }
 .job-discard-dialog [data-slot="dialog-footer"] { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 6px; }
+.job-delete-dialog { max-width: min(500px, calc(100% - 32px)); }
+.job-delete-dialog [data-slot="dialog-footer"] { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; margin-top: 6px; }
+.job-delete-summary { display: grid; gap: 3px; padding: 10px 11px; background: #f7f7f8; border: 1px solid #e8e8eb; border-radius: 8px; }
+.job-delete-summary strong { color: #3d3f46; font-size: 13px; font-weight: 620; }
+.job-delete-summary span { color: #73757c; font-size: 11px; }
+.job-delete-ack { display: flex; align-items: flex-start; gap: 8px; color: #5c4140; font-size: 11px; line-height: 1.55; cursor: pointer; }
+.job-delete-ack input { width: 17px; height: 17px; flex: 0 0 auto; margin: 0; accent-color: var(--job-danger); }
+.job-delete-error { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--job-danger); font-size: 11px; }
 .job-welcome { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 0 28px; min-height: 330px; align-items: center; padding: clamp(22px, 4vw, 46px); background: #fff; border: 1px solid var(--job-border); border-radius: 14px; }
 .job-welcome-main { max-width: 530px; }
 .job-welcome-mark { width: 40px; height: 40px; display: grid; place-items: center; margin-bottom: 15px; color: var(--job-accent); background: #edf5ff; border-radius: 10px; }
@@ -885,6 +897,8 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-page-heading { align-items: end; margin-bottom: 3px; }
 .job-page-heading h1 { font-size: 28px; }
 .job-page-heading p { max-width: 64ch; font-size: 12px; }
+.job-history-tools { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.job-history-tools > [data-slot="button"] { min-height: 34px; padding-inline: 12px; font-size: 11px; white-space: nowrap; }
 .job-search { width: min(300px, 100%); display: flex; align-items: center; gap: 7px; padding-left: 10px; color: #74767d; background: #f7f7f8; border: 1px solid #e7e7e9; border-radius: 8px; }
 .job-search svg { flex: 0 0 auto; }
 .job-search input { height: 34px; min-width: 0; border: 0; background: transparent; font-size: 11px; }
@@ -1029,6 +1043,7 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-resume > button { grid-column: 1 / -1; width: 100%; }
   .job-page-heading { align-items: flex-start; flex-direction: column; gap: 9px; }
   .job-page-heading h1 { font-size: 24px; }
+  .job-history-tools { width: 100%; align-items: stretch; flex-direction: column-reverse; }
   .job-search, .job-history-select { width: 100%; }
   .job-app-footer { align-items: flex-start; flex-direction: column; gap: 5px; margin-top: 24px; padding-top: 12px; font-size: 10px; }
   .job-account-dialog { width: calc(100% - 20px); max-height: 92vh; padding: 15px; }

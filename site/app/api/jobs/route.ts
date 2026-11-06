@@ -3,6 +3,7 @@ import { hasTrustedOrigin, requestAddress } from "../../lib/request-security";
 import { tryAcquireUploadSlot } from "../../lib/upload-gate";
 import {
   adoptProcessingJob, createProcessingJob, discardProcessingJob,
+  deleteProcessingJob,
   downloadProcessingJobFile, getProcessingJob, listProcessingJobs, prepareProcessingJob,
   previewProcessingJobFile, ProcessingJobError, simulateProcessingJob, uploadProcessingJobFile, pasteSourceProcessingJob,
 } from "../../lib/processing-jobs";
@@ -158,6 +159,8 @@ export async function POST(request: Request) {
       job = await adoptProcessingJob({ id: body.id, revision: body.revision, ack: body.ack, fileHashes: body.fileHashes }, user);
     } else if (action === "discard") {
       job = await discardProcessingJob({ id: body.id, revision: body.revision, reason: body.reason }, user);
+    } else if (action === "delete") {
+      return reply(await deleteProcessingJob({ id: body.id, revision: body.revision }, user));
     } else if (action === "paste-source") {
       job = await pasteSourceProcessingJob({
         id: body.id, revision: body.revision, text: body.text,

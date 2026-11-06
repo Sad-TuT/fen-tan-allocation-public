@@ -66,6 +66,7 @@ export type ProcessingJobRequest =
   | { action: "simulate" | "prepare"; id: string; revision: number; product: string; price: string; quantity: number; assignments?: unknown }
   | { action: "adopt"; id: string; revision: number; ack: "I_REVIEWED_FILES"; fileHashes: Record<string, string> }
   | { action: "discard"; id: string; revision: number; reason: string }
+  | { action: "delete"; id: string; revision: number }
 
 export type ProcessingJobPreview = {
   file: ProcessingFile;

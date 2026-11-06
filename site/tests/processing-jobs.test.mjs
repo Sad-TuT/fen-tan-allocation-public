@@ -220,6 +220,54 @@ test('a batch accepts at most 10 equal source files and rejects the 11th on the 
   await assert.rejects(upload(owner, job, 'source', overflow, 11), /最多上传10份资金表/);
 });
 
+test('temporary batches delete records and files while adopted audit batches are protected', async () => {
+  const owner = await addUser('operator-delete-owner');
+  const viewer = await addUser('viewer-delete-denied', 'viewer');
+  const admin = await addUser('admin-delete', 'admin');
+  let draft = await jobs.createProcessingJob(owner);
+  draft = await upload(owner, draft, 'source', await sourceFile('删除测试员工', 600, '删除测试资金.xlsx'), 1);
+  draft = await jobs.uploadProcessingJobFile({
+    id: draft.id, revision: draft.revision, role: 'template', name: '删除测试模板.xlsx', bytes: await templateFile(),
+  }, owner);
+  const draftPrefix = `processing-jobs/${draft.id}/`;
+  const beforeDelete = await env.BUCKET.list({ prefix: draftPrefix });
+  assert.ok(beforeDelete.objects.length >= 3);
+
+  await assert.rejects(
+    jobs.deleteProcessingJob({ id: draft.id, revision: draft.revision }, viewer),
+    /查看账号不能修改任务/,
+  );
+  await assert.rejects(
+    jobs.deleteProcessingJob({ id: draft.id, revision: draft.revision + 1 }, owner),
+    /刷新后重试/,
+  );
+  await jobs.deleteProcessingJob({ id: draft.id, revision: draft.revision }, owner);
+  assert.equal(await jobs.getProcessingJob(draft.id, owner).catch(error => error.status), 404);
+  assert.equal(Number((await env.DB.prepare('SELECT COUNT(*) AS count FROM processing_job_events WHERE job_id=?').bind(draft.id).first()).count), 0);
+  assert.equal(Number((await env.DB.prepare('SELECT COUNT(*) AS count FROM processing_active_sources WHERE job_id=?').bind(draft.id).first()).count), 0);
+  assert.equal((await env.BUCKET.list({ prefix: draftPrefix })).objects.length, 0);
+
+  let adopted = await jobs.createProcessingJob(owner);
+  adopted = await upload(owner, adopted, 'source', await sourceFile('正式员工', 900, '正式资金.xlsx'), 1);
+  adopted = await jobs.uploadProcessingJobFile({
+    id: adopted.id, revision: adopted.revision, role: 'template', name: '正式模板.xlsx', bytes: await templateFile(),
+  }, owner);
+  adopted = (await prepare(owner, adopted, '正式商品', '3', 33)).job;
+  adopted = await jobs.adoptProcessingJob({
+    id: adopted.id, revision: adopted.revision, ack: 'I_REVIEWED_FILES', fileHashes: hashes(adopted),
+  }, owner);
+  await assert.rejects(
+    jobs.deleteProcessingJob({ id: adopted.id, revision: adopted.revision }, owner),
+    /已完成批次不能删除/,
+  );
+  assert.equal((await jobs.getProcessingJob(adopted.id, owner)).status, 'adopted');
+
+  let adminDraft = await jobs.createProcessingJob(owner);
+  adminDraft = await upload(owner, adminDraft, 'source', await sourceFile('管理员删除员工', 450, '管理员删除资金.xlsx'), 1);
+  await jobs.deleteProcessingJob({ id: adminDraft.id, revision: adminDraft.revision }, admin);
+  assert.equal(await jobs.getProcessingJob(adminDraft.id, owner).catch(error => error.status), 404);
+});
+
 test('each row with a blank department remains an independent exact-allocation group', async () => {
   const owner = await addUser('operator-blank-groups');
   const workbook = new ExcelJS.Workbook();
