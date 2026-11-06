@@ -268,6 +268,24 @@ test('temporary batches delete records and files while adopted audit batches are
   assert.equal(await jobs.getProcessingJob(adminDraft.id, owner).catch(error => error.status), 404);
 });
 
+test('batch numbers are stable sequential labels and are not reused after deletion', async () => {
+  const owner = await addUser('operator-number-labels');
+  const first = await jobs.createProcessingJob(owner);
+  const second = await jobs.createProcessingJob(owner);
+  assert.ok(Number.isSafeInteger(first.batchNumber) && first.batchNumber >= 1);
+  assert.equal(second.batchNumber, first.batchNumber + 1);
+
+  const listed = await jobs.listProcessingJobs(owner);
+  assert.deepEqual(
+    listed.jobs.map(job => job.batchNumber).sort((a, b) => a - b),
+    [first.batchNumber, second.batchNumber],
+  );
+
+  await jobs.deleteProcessingJob({ id: first.id, revision: first.revision }, owner);
+  const third = await jobs.createProcessingJob(owner);
+  assert.equal(third.batchNumber, second.batchNumber + 1);
+});
+
 test('each row with a blank department remains an independent exact-allocation group', async () => {
   const owner = await addUser('operator-blank-groups');
   const workbook = new ExcelJS.Workbook();

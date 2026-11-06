@@ -42,6 +42,7 @@ function writeRoute(jobId: string, view: View) {
 
 const money = (cents: number | null | undefined) => new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format((cents ?? 0) / 100);
 const quantityFormat = (value: number | null | undefined) => new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(value ?? 0);
+const batchNumber = (value: number) => String(value).padStart(6, "0");
 const readableDate = (value: string) => new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 const dateToday = () => new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date());
 
@@ -226,7 +227,7 @@ function FileImport({
 function EmptyWork({ onCreate, existing, onResume, disabled }: { onCreate: () => void; existing?: ProcessingJobSummary; onResume: () => void; disabled: boolean }) {
   return <div className="job-welcome">
     <div className="job-welcome-main"><span className="job-welcome-mark"><FileSpreadsheet size={21} /></span><h2>上传本批余额开始</h2><p>每个新批次都重新上传余额表；上传后填写商品信息并精确试算。</p><Button onClick={onCreate} disabled={disabled}><Plus size={17} />开始新批次</Button></div>
-    {existing && <div className="job-resume"><div><span>最近打开</span><strong>{existing.product || "未命名批次"}</strong><small>更新于 {readableDate(existing.updatedAt)}</small></div><JobStatus status={existing.status} /><Button variant="outline" onClick={onResume}>继续处理<ArrowUpRight size={15} /></Button></div>}
+    {existing && <div className="job-resume"><div><span>最近打开</span><strong>{existing.product || "未命名批次"}</strong><small>批次 {batchNumber(existing.batchNumber)} · 更新于 {readableDate(existing.updatedAt)}</small></div><JobStatus status={existing.status} /><Button variant="outline" onClick={onResume}>继续处理<ArrowUpRight size={15} /></Button></div>}
       <div className="job-welcome-steps"><span>上传本批余额</span><i aria-hidden="true" /><span>填写本批商品</span><i aria-hidden="true" /><span>生成结果文件</span><i aria-hidden="true" /><span>确认本批完成</span></div>
   </div>;
 }
@@ -234,14 +235,14 @@ function EmptyWork({ onCreate, existing, onResume, disabled }: { onCreate: () =>
 function JobTable({ jobs, selectedId, canDelete, onOpen, onDelete }: { jobs: ProcessingJobSummary[]; selectedId: string; canDelete: boolean; onOpen: (id: string) => void; onDelete: (job: ProcessingJobSummary) => void }) {
   if (!jobs.length) return <div className="job-history-empty"><FileSpreadsheet size={22} /><strong>还没有批次</strong><p>新建一次处理后，上传的余额、候选文件和完成状态会保存在这里。</p></div>;
   return <div className="job-table-scroll"><Table className="job-history-table"><TableHeader><TableRow><TableHead>批次</TableHead><TableHead>输入来源</TableHead><TableHead className="text-right">目标金额</TableHead><TableHead className="text-right">数量</TableHead><TableHead>状态</TableHead><TableHead>最后更新</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{jobs.map((job) => <TableRow key={job.id} data-selected={selectedId === job.id}>
-    <TableCell><button type="button" className="job-history-open" onClick={() => onOpen(job.id)}><strong>{job.product || "未填写商品"}</strong><small>{job.id.slice(0, 8)}</small></button></TableCell>
+    <TableCell><button type="button" className="job-history-open" onClick={() => onOpen(job.id)}><strong>{job.product || "未填写商品"}</strong><small>批次 {batchNumber(job.batchNumber)}</small></button></TableCell>
     <TableCell>{job.sourceCount} 份 · {job.fileCount} 个文件</TableCell><TableCell className="text-right numeric">{job.totalCents === null ? "—" : money(job.totalCents)}</TableCell><TableCell className="text-right numeric">{job.quantity === null ? "—" : quantityFormat(job.quantity)}</TableCell><TableCell><JobStatus status={job.status} /></TableCell><TableCell className="muted">{readableDate(job.updatedAt)}</TableCell><TableCell><div className="job-history-actions"><Button type="button" variant="ghost" size="sm" onClick={() => onOpen(job.id)}>{selectedId === job.id ? "已打开" : "打开"}</Button>{canDelete && job.status !== "adopted" && <Button type="button" variant="ghost" size="sm" className="job-history-delete" onClick={() => onDelete(job)}><Trash2 size={13} />删除</Button>}</div></TableCell>
   </TableRow>)}</TableBody></Table></div>;
 }
 
 function HistoryView({ jobs, selectedId, query, onQuery, onOpen, onNewBatch, canWrite, onDelete }: { jobs: ProcessingJobSummary[]; selectedId: string; query: string; onQuery: (value: string) => void; onOpen: (id: string) => void; onNewBatch: () => void; canWrite: boolean; onDelete: (job: ProcessingJobSummary) => Promise<void> }) {
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase("zh-CN"));
-  const filtered = useMemo(() => jobs.filter((job) => `${job.product ?? ""} ${job.id}`.toLocaleLowerCase("zh-CN").includes(deferredQuery)), [jobs, deferredQuery]);
+  const filtered = useMemo(() => jobs.filter((job) => `${job.product ?? ""} ${batchNumber(job.batchNumber)} ${job.id}`.toLocaleLowerCase("zh-CN").includes(deferredQuery)), [jobs, deferredQuery]);
   const [deleteTarget, setDeleteTarget] = useState<ProcessingJobSummary | null>(null);
   const [deleteAcknowledged, setDeleteAcknowledged] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -268,7 +269,7 @@ function HistoryView({ jobs, selectedId, query, onQuery, onOpen, onNewBatch, can
     <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open && !deleteBusy) { setDeleteTarget(null); setDeleteAcknowledged(false); setDeleteError(""); } }}>
       <DialogContent className="job-delete-dialog">
         <DialogHeader><DialogTitle>永久删除这个批次？</DialogTitle><DialogDescription>该操作会同时删除批次记录、上传资料和已生成文件，删除后无法恢复。</DialogDescription></DialogHeader>
-        {deleteTarget && <div className="job-delete-summary"><strong>{deleteTarget.product || "未填写商品"}</strong><span>批次 {deleteTarget.id.slice(0, 8)} · {deleteTarget.sourceCount} 份来源 · {deleteTarget.fileCount} 个文件</span></div>}
+        {deleteTarget && <div className="job-delete-summary"><strong>{deleteTarget.product || "未填写商品"}</strong><span>批次 {batchNumber(deleteTarget.batchNumber)} · {deleteTarget.sourceCount} 份来源 · {deleteTarget.fileCount} 个文件</span></div>}
         <label className="job-delete-ack"><input type="checkbox" checked={deleteAcknowledged} onChange={(event) => setDeleteAcknowledged(event.target.checked)} disabled={deleteBusy} /><span>我已核对批次号和内容，确认删除，且不需要保留这些资料。</span></label>
         {deleteError && <p className="job-delete-error" role="alert"><CircleAlert size={15} />{deleteError}</p>}
         <DialogFooter><Button type="button" variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>取消</Button><Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={!deleteAcknowledged || deleteBusy}>{deleteBusy ? <LoaderCircle size={15} className="animate-spin" /> : <Trash2 size={15} />}{deleteBusy ? "正在删除…" : "永久删除"}</Button></DialogFooter>
@@ -281,7 +282,7 @@ function DataView({ jobs, job, onSelectJob }: { jobs: ProcessingJobSummary[]; jo
   const files = job?.files ?? [];
   return <section className="job-content-view" aria-labelledby="job-data-heading">
     <div className="job-page-heading"><div><span className="job-page-kicker">文件浏览</span><h1 id="job-data-heading">表格数据</h1><p>按批次选择文件，直接查看可搜索的 Excel 明细和生成结果。</p></div>
-      {jobs.length > 0 && <label className="job-history-select"><span className="sr-only">选择批次</span><select aria-label="选择批次" value={job?.id ?? ""} onChange={(event) => onSelectJob(event.target.value)}>{jobs.map((item) => <option key={item.id} value={item.id}>{item.product || "未命名批次"} · {item.id.slice(0, 8)}</option>)}</select></label>}
+      {jobs.length > 0 && <label className="job-history-select"><span className="sr-only">选择批次</span><select aria-label="选择批次" value={job?.id ?? ""} onChange={(event) => onSelectJob(event.target.value)}>{jobs.map((item) => <option key={item.id} value={item.id}>{item.product || "未命名批次"} · 批次 {batchNumber(item.batchNumber)}</option>)}</select></label>}
     </div>
     {!job ? <div className="job-history-empty"><FileSpreadsheet size={22} /><strong>没有可浏览的批次</strong><p>上传表格后，它会出现在这里。可以分页查看行数据，不会执行工作簿公式。</p></div> : files.length > 0 ? <WorkspaceDataPreview key={job.id} jobId={job.id} files={files} /> : <div className="job-history-empty"><FileSpreadsheet size={22} /><strong>本批还没有文件</strong><p>上传原始资料后，可查看工作表名称、列名与行号。</p></div>}
     {job && files.length > 0 && <p className="job-readonly-note">来源文件保持原样。生成文件供本批核对，不会自动改变另一份余额表。</p>}
@@ -503,7 +504,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
   };
 
   return <section className="job-batch" aria-labelledby="job-batch-title">
-      <div className="job-batch-heading"><div><div className="job-batch-title-row"><span className="job-page-kicker">新批次 · 本次上传余额</span><JobStatus status={job.status} /><span className="job-revision">版本 {job.revision}</span></div><h1 id="job-batch-title">{job.product || "填写本批商品"}</h1><p>批次 {job.id.slice(0, 8)} · 更新于 {readableDate(job.updatedAt)}</p></div><div className="job-batch-quick-actions"><Button type="button" variant="outline" size="sm" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === "refresh" ? "animate-spin" : ""} />刷新</Button><Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={onNewBatch}><Plus size={15} />新批次</Button></div></div>
+      <div className="job-batch-heading"><div><div className="job-batch-title-row"><span className="job-page-kicker">新批次 · 本次上传余额</span><JobStatus status={job.status} /><span className="job-revision">版本 {job.revision}</span></div><h1 id="job-batch-title">{job.product || "填写本批商品"}</h1><p>批次 {batchNumber(job.batchNumber)} · 更新于 {readableDate(job.updatedAt)}</p></div><div className="job-batch-quick-actions"><Button type="button" variant="outline" size="sm" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === "refresh" ? "animate-spin" : ""} />刷新</Button><Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={onNewBatch}><Plus size={15} />新批次</Button></div></div>
 
     <StepRail current={step} />
     {error && <div className="job-page-error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}
@@ -541,7 +542,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
           jobId={job.id}
           jobStatus={job.status}
           userId={userId}
-          contextLabel={job.product || `批次 ${job.id.slice(0, 8)}`}
+          contextLabel={job.product || `批次 ${batchNumber(job.batchNumber)}`}
           disabled={job.status === "discarded"}
           canApplyDraft={job.status === "draft" && canWrite}
           onApplyDraft={(draft) => { setProduct(draft.product); setPrice(draft.price); setQuantity(String(draft.quantity)); setSimulation(null); document.getElementById(`job-parameters-heading`)?.scrollIntoView({ behavior: "smooth", block: "center" }); }}

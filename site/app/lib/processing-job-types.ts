@@ -29,6 +29,7 @@ export type ProcessingSourceSummary = {
 
 export type ProcessingJobSummary = {
   id: string;
+  batchNumber: number;
   status: ProcessingJobStatus;
   revision: number;
   product: string | null;

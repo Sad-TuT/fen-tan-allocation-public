@@ -76,6 +76,7 @@ export const appUsers = sqliteTable("app_users", {
 // shared allocation workspace above. Files remain immutable in object storage.
 export const processingJobs = sqliteTable("processing_jobs", {
   id: text("id").primaryKey(),
+  batchNumber: integer("batch_number").notNull(),
   ownerId: text("owner_id").notNull().references(() => appUsers.id, { onDelete: "restrict" }),
   parentJobId: text("parent_job_id"),
   status: text("status").notNull(),
@@ -92,9 +93,15 @@ export const processingJobs = sqliteTable("processing_jobs", {
   discardedAt: text("discarded_at"),
   discardReason: text("discard_reason"),
 }, (table) => [
+  uniqueIndex("processing_jobs_batch_number_unique").on(table.batchNumber),
   index("processing_jobs_owner_created").on(table.ownerId, table.createdAt, table.id),
   uniqueIndex("processing_jobs_single_active_child").on(table.parentJobId).where(sql`${table.parentJobId} IS NOT NULL AND ${table.status} <> 'discarded'`),
 ]);
+
+export const processingJobSequence = sqliteTable("processing_job_sequence", {
+  id: integer("id").primaryKey(),
+  nextNumber: integer("next_number").notNull(),
+});
 
 export const processingJobEvents = sqliteTable("processing_job_events", {
   id: text("id").primaryKey(),

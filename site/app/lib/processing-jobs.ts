@@ -27,7 +27,7 @@ const JSON_TYPE = "application/json; charset=utf-8";
 type DbRow = Record<string, unknown>;
 type StoredFile = ProcessingFile & { key: string };
 type JobRow = DbRow & {
-  id: string; owner_id: string; parent_job_id: string | null; status: ProcessingJobStatus; revision: number;
+  id: string; batch_number: number; owner_id: string; parent_job_id: string | null; status: ProcessingJobStatus; revision: number;
   data_key: string; source_fingerprint: string; product: string | null; total_cents: number | null;
   quantity: number | null; created_at: string; updated_at: string; adopted_at: string | null;
   adopted_by: string | null; discarded_at: string | null; discard_reason: string | null;
@@ -87,6 +87,11 @@ function ownerFilter(user: AppUser, column: string): { sql: string; args: string
 }
 function objectPrefix(id: string): string { return "processing-jobs/" + id; }
 function newId(): string { return randomUUID(); }
+function batchNumber(value: unknown): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1) throw new ProcessingJobError("批次编号损坏，请停止操作并核实数据。", 500, "INVALID_BATCH_NUMBER");
+  return number;
+}
 async function readObject(key: string): Promise<Uint8Array> {
   const result = await bucket().get(key);
   if (!result) throw new ProcessingJobError("任务文件缺失，请停止操作并核实存储。", 500, "OBJECT_MISSING");
@@ -164,7 +169,7 @@ function publicJob(row: JobRow, data: JobData): ProcessingJob {
   const tax = data.files.find(file => file.id === data.taxFileId);
   const template = data.files.find(file => file.id === data.templateFileId);
   return {
-    id: row.id, status: row.status, revision: Number(row.revision), product: data.product,
+    id: row.id, batchNumber: batchNumber(row.batch_number), status: row.status, revision: Number(row.revision), product: data.product,
     totalCents: data.plan?.totalCents ?? null, quantity: data.quantity,
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
     parentJobId: row.parent_job_id ? String(row.parent_job_id) : null,
@@ -228,12 +233,14 @@ async function insertBlankJob(user: AppUser, data: JobData): Promise<ProcessingJ
   const key = await writeJson(id, 0, initial);
   const createdAt = new Date().toISOString();
   const inserted = await db().batch([
-    db().prepare("INSERT INTO processing_jobs (id,owner_id,parent_job_id,status,revision,data_key,source_fingerprint,created_at,updated_at) VALUES (?,?,NULL,'draft',0,?,?,?,?)")
+    db().prepare("INSERT INTO processing_jobs (id,owner_id,parent_job_id,status,revision,data_key,source_fingerprint,batch_number,created_at,updated_at) SELECT ?,?,NULL,'draft',0,?,?,next_number,?,? FROM processing_job_sequence WHERE id=1")
       .bind(id, user.userId, key, fingerprint(initial.sources), createdAt, createdAt),
-    db().prepare("INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) VALUES (?, ?, ?, 'job_created', 0, ?, ?)")
-      .bind(newId(), id, user.userId, createdAt, JSON.stringify({ parentJobId: null })),
+    db().prepare("UPDATE processing_job_sequence SET next_number=next_number+1 WHERE id=1 AND next_number=(SELECT batch_number FROM processing_jobs WHERE id=?)")
+      .bind(id),
+    db().prepare("INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) SELECT ?,?,?,'job_created',0,?,? WHERE EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND batch_number>=1)")
+      .bind(newId(), id, user.userId, createdAt, JSON.stringify({ parentJobId: null }), id),
   ]);
-  if (inserted[0].meta.changes !== 1 || inserted[1].meta.changes !== 1) throw new ProcessingJobError("未能创建新批次，请刷新后重试。", 409, "JOB_CREATE_FAILED");
+  if (inserted.some(result => result.meta.changes !== 1)) throw new ProcessingJobError("未能创建新批次，请刷新后重试。", 409, "JOB_CREATE_FAILED");
   const row = await getRow(id, user);
   return publicJob(row, initial);
 }
@@ -258,7 +265,7 @@ export async function listProcessingJobs(user: AppUser): Promise<{ jobs: Process
     summary[row.status] += 1;
     const data = await loadData(row);
     jobs.push({
-      id: row.id, status: row.status, revision: Number(row.revision), product: row.product,
+      id: row.id, batchNumber: batchNumber(row.batch_number), status: row.status, revision: Number(row.revision), product: row.product,
       totalCents: row.total_cents === null ? null : Number(row.total_cents),
       quantity: row.quantity === null ? null : Number(row.quantity),
       createdAt: String(row.created_at), updatedAt: String(row.updated_at),
