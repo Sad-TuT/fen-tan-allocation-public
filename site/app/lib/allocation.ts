@@ -389,7 +389,7 @@ export function planAllocation(sources: Source[], priceCents: number, quantity: 
     const { ordered, allGroups, exclusions, before, previous } = inspected;
   const active = allGroups.map(group => ({ group, options: groupOptions(group.amount, priceCents, quantity) })).filter(x => x.options.max > 0 || x.options.full !== null);
   const dpCells = active.length * (quantity + 1);
-  if (!Number.isSafeInteger(dpCells) || dpCells > cap.maxDpCells) throw new AllocationError("LIMIT_EXCEEDED", `本批需要${dpCells}个精确计算状态，超过已验证上限${cap.maxDpCells}；尚未判定能否精确分摊，不会以近似结果入账。`);
+  if (!Number.isSafeInteger(dpCells) || dpCells > cap.maxDpCells) throw new AllocationError("LIMIT_EXCEEDED", `本批需要${dpCells}个精确计算状态，超过已验证上限${cap.maxDpCells}；尚未判定能否精确分摊，不会用近似结果确认本批完成。`);
   const eligibleCents = sum(allGroups.map(g => g.amount));
   const availableCents = sum([...before.values()]);
   const capacity = sum(active.map(({ options }) => Math.max(options.max, options.full ?? 0)));

@@ -20,10 +20,11 @@ const dataRoot = await mkdtemp(path.join(workRoot, 'processing-jobs-'));
 process.env.ALLOCATION_DATA_DIR = dataRoot;
 
 const { env } = await import(new URL('../app/lib/node-runtime.ts', import.meta.url).href);
-const persistence = await import(new URL('../app/lib/persistence.ts', import.meta.url).href);
 const jobs = await import(new URL('../app/lib/processing-jobs.ts', import.meta.url).href);
 const hashes = (job) => Object.fromEntries(job.files.filter(file => ['invoice', 'source-marked', 'source-remaining', 'audit'].includes(file.role)).map(file => [file.id, file.sha256]));
 const bytes = async workbook => new Uint8Array(await workbook.xlsx.writeBuffer());
+const workspaceSnapshot = () => env.DB.prepare("SELECT version,data_key,last_batch_id FROM allocation_workspace WHERE id='main'").first();
+const storeObject = (key, input, contentType = 'application/json; charset=utf-8') => env.BUCKET.put(key, input, { httpMetadata: { contentType } });
 
 async function addUser(id, role = 'operator') {
   await env.DB.prepare('INSERT INTO app_users (id,username,display_name,role,password_salt,password_hash,password_iterations,password_version,must_change_password,disabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -72,12 +73,11 @@ async function flipObject(key) {
   return async () => writeFile(objectPath, original);
 }
 
-test('file-processing batches preserve cents, hash-bound review, lineage, and legacy workspace isolation', async () => {
+test('file-processing batches preserve cents, hash-bound review, and require a fresh balance upload for every job', async () => {
   const owner = await addUser('operator-a');
   const other = await addUser('operator-b');
   const viewer = await addUser('viewer-c', 'viewer');
-  const originalWorkspace = await persistence.loadWorkspace();
-  assert.equal(originalWorkspace.version, 0);
+  assert.equal(await workspaceSnapshot(), null);
 
   let job = await jobs.createProcessingJob(owner);
   assert.equal(job.product, null);
@@ -109,7 +109,7 @@ test('file-processing batches preserve cents, hash-bound review, lineage, and le
   }, owner);
   assert.equal(dryRun.simulation.totalCents, 9900);
   assert.equal(dryRun.simulation.availableCents, 89700);
-  assert.equal((await persistence.loadWorkspace()).version, 0);
+  assert.equal(await workspaceSnapshot(), null);
 
   const preparedResult = await prepare(owner, job, '合成商品');
   job = preparedResult.job;
@@ -133,7 +133,7 @@ test('file-processing batches preserve cents, hash-bound review, lineage, and le
   const legacyState = JSON.parse(objectBytes.toString('utf8'));
   legacyState.plan.ruleVersion = 'department-compat-v3';
   const legacyStateKey = `processing-jobs/${job.id}/states/synthetic-legacy-rule.json`;
-  await persistence.storeFile(legacyStateKey, Buffer.from(JSON.stringify(legacyState)), 'application/json; charset=utf-8');
+  await storeObject(legacyStateKey, Buffer.from(JSON.stringify(legacyState)));
   await env.DB.prepare('UPDATE processing_jobs SET data_key=? WHERE id=?').bind(legacyStateKey, job.id).run();
   const legacyJob = await jobs.getProcessingJob(job.id, owner);
   assert.equal(legacyJob.planStale, true);
@@ -172,7 +172,7 @@ test('file-processing batches preserve cents, hash-bound review, lineage, and le
     id: job.id, revision: job.revision, ack: 'I_REVIEWED_FILES', fileHashes: hashes(job),
   }, owner);
   assert.equal(job.status, 'adopted');
-  assert.equal((await persistence.loadWorkspace()).version, 0);
+  assert.equal(await workspaceSnapshot(), null);
 
   const disguised = await sourceFile('员工甲', 500, '改名资金表.xlsx');
   const disguisedWorkbook = new ExcelJS.Workbook();
@@ -183,27 +183,25 @@ test('file-processing batches preserve cents, hash-bound review, lineage, and le
   replay = await jobs.uploadProcessingJobFile({ id: replay.id, revision: replay.revision, role: 'source', name: '改名资金表.xlsx', bytes: alteredBytes, priority: 1 }, owner);
   replay = await jobs.uploadProcessingJobFile({ id: replay.id, revision: replay.revision, role: 'template', name: '模板.xlsx', bytes: templateBytes }, owner);
   replay = (await prepare(owner, replay, '重复余额尝试')).job;
-  await assert.rejects(jobs.adoptProcessingJob({
+  replay = await jobs.adoptProcessingJob({
     id: replay.id, revision: replay.revision, ack: 'I_REVIEWED_FILES', fileHashes: hashes(replay),
-  }, owner), /同一金额余额/);
+  }, owner);
+  assert.equal(replay.status, 'adopted');
   assert.equal(Number((await env.DB.prepare('SELECT COUNT(*) AS count FROM processing_active_sources WHERE job_id=?').bind(replay.id).first()).count), 0);
 
-  const next = await jobs.continueProcessingJob(job.id, job.revision, owner);
+  const next = await jobs.createProcessingJob(owner);
   assert.equal(next.status, 'draft');
   assert.equal(next.product, null);
   assert.equal(next.priceCents, null);
   assert.equal(next.quantity, null);
-  assert.equal(next.parentJobId, job.id);
-  assert.equal(next.sources.reduce((sum, source) => sum + source.availableCents, 0), 79800);
-  await assert.rejects(jobs.discardProcessingJob({ id: job.id, revision: job.revision, reason: '试图回滚' }, owner), /后续批次/);
-  const second = await prepare(owner, next, '下一批商品', '3', 33);
-  assert.equal(second.job.product, '下一批商品');
-  assert.equal(second.job.taxPending, 1);
-  assert.equal((await persistence.loadWorkspace()).version, 0);
+  assert.equal(next.parentJobId, null);
+  assert.equal(next.sources.length, 0);
+  assert.equal(await workspaceSnapshot(), null);
 
   const secondSummary = await jobs.listProcessingJobs(owner);
-  assert.equal(secondSummary.summary.prepared, 2);
-  assert.equal(secondSummary.summary.adopted, 1);
+  assert.equal(secondSummary.summary.prepared, 0);
+  assert.equal(secondSummary.summary.adopted, 2);
+  assert.equal(secondSummary.summary.draft, 1);
 });
 
 test('each row with a blank department remains an independent exact-allocation group', async () => {
@@ -233,7 +231,7 @@ test('each row with a blank department remains an independent exact-allocation g
   assert.ok(simulation.groups.every(group => group.department === '' && group.useCenter === '' && group.availableCents === 100));
 });
 
-test('adopt versus discard CAS leaves source reservations consistent', async () => {
+test('adopt versus discard does not create cross-batch source reservations', async () => {
   const user = await addUser('operator-race');
   const first = await sourceFile('争用员工', 701, '争用资金.xlsx');
   let job = await jobs.createProcessingJob(user);
@@ -247,7 +245,7 @@ test('adopt versus discard CAS leaves source reservations consistent', async () 
   ]);
   const current = await jobs.getProcessingJob(job.id, user);
   const locked = Number((await env.DB.prepare('SELECT COUNT(*) AS count FROM processing_active_sources WHERE job_id=?').bind(job.id).first()).count);
-  if (current.status === 'adopted') assert.equal(locked, 1);
-  else { assert.equal(current.status, 'discarded'); assert.equal(locked, 0); }
+  assert.ok(current.status === 'adopted' || current.status === 'discarded');
+  assert.equal(locked, 0);
   assert.equal(result.some(item => item.status === 'fulfilled'), true);
 });

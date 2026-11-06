@@ -649,11 +649,9 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-user-menu > span:nth-child(2) strong, .job-user-menu > span:nth-child(2) small { display: block; }
 .job-user-menu > span:nth-child(2) strong { max-width: 116px; overflow: hidden; color: var(--job-secondary); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .job-user-menu > span:nth-child(2) small { margin-top: 1px; color: var(--job-muted); font-size: 11px; }
-.job-manage-shortcut { min-height: 36px; margin-left: 4px; padding: 0 10px; color: #5d626b; background: transparent; border: 1px solid transparent; border-radius: 8px; font-size: 12px; }
-.job-manage-shortcut:hover { color: var(--job-ink); background: #f5f5f7; border-color: var(--job-border); }
 .job-account-shortcut { width: 34px; height: 34px; display: grid; place-items: center; color: #686a72; background: transparent; border: 1px solid transparent; border-radius: 8px; }
 .job-account-shortcut:hover { color: #34363d; background: #f5f5f7; border-color: var(--job-border); }
-.job-legacy-wrap[hidden], .job-workbench-wrap[hidden], .job-workspace-preserve[hidden] { display: none !important; }
+.job-workbench-wrap[hidden], .job-workspace-preserve[hidden] { display: none !important; }
 .job-main-content { width: min(calc(100% - 48px), 1560px); min-width: 0; margin: 0 auto; padding: 24px 0 60px; }
 .job-topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; color: #777980; font-size: 12px; }
 .job-topline time { color: #7c7e84; font-variant-numeric: tabular-nums; }
@@ -661,7 +659,6 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-control-note { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: #72747b; font-size: 12px; }
 .job-control-note svg { flex: 0 0 auto; }
 .job-control-note p { margin: 0; }
-.job-legacy-return { position: sticky; top: 68px; z-index: 34; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 0 max(24px, calc((100vw - 1560px)/2)); background: #fafafa; border-bottom: 1px solid var(--job-border); color: #66676e; font-size: 13px; }
 .job-account-dialog { max-width: min(980px, calc(100% - 32px)); max-height: min(88vh, 900px); overflow-y: auto; }
 .job-account-dialog [data-slot="dialog-header"] { margin-bottom: 12px; }
 .job-account-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 18px; border-top: 1px solid var(--job-border); }
@@ -675,7 +672,7 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-batch-heading p, .job-page-heading p { margin: 3px 0 0; color: #777980; font-size: 13px; }
 .job-batch-quick-actions { display: flex; align-items: center; gap: 5px; padding-top: 18px; }
 .job-batch-quick-actions [data-slot="button"] { min-height: 34px; font-size: 12px; }
-.job-workspace-preserve[hidden], .job-legacy-wrap[hidden], .job-workbench-wrap[hidden] { display: none !important; }
+.job-workspace-preserve[hidden], .job-workbench-wrap[hidden] { display: none !important; }
 .job-status { display: inline-flex; align-items: center; gap: 5px; width: fit-content; padding: 4px 8px; border-color: transparent; border-radius: 7px; font-size: 11px; line-height: 1.25; font-weight: 600; white-space: nowrap; }
 .job-state-draft { color: #585a62; background: #f0f0f2; }
 .job-state-prepared { color: var(--job-pending); background: #fff5e3; }
@@ -970,7 +967,6 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-user-menu { gap: 0; }
   .job-user-avatar { width: 29px; height: 29px; font-size: 12px; }
   .job-user-menu > span:nth-child(2) { display: none; }
-  .job-manage-shortcut { margin-left: 2px; padding-inline: 6px; font-size: 10px; }
   .job-main-content { width: calc(100% - 24px); padding-top: 13px; }
   .job-topline { margin-bottom: 9px; font-size: 10px; }
   .job-batch-heading { gap: 8px; margin-bottom: 12px; }
@@ -1038,7 +1034,6 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-app-footer { align-items: flex-start; flex-direction: column; gap: 5px; margin-top: 24px; padding-top: 12px; font-size: 10px; }
   .job-account-dialog { width: calc(100% - 20px); max-height: 92vh; padding: 15px; }
   .job-account-footer { align-items: flex-start; flex-direction: column; }
-  .job-legacy-return { top: 58px; padding-inline: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1052,8 +1047,6 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-user-menu { grid-column: 2; grid-row: 1; justify-self: end; gap: 4px; }
   .job-user-menu > span:nth-child(2) { display: none; }
   .job-user-avatar { display: grid; }
-  .job-manage-shortcut { width: 31px; height: 30px; display: inline-flex; align-items: center; justify-content: center; margin-left: 0; padding: 0; }
-  .job-manage-shortcut > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
   .job-main-nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); width: 100%; align-self: center; gap: 4px; }
   .job-main-nav > button { min-width: 0; width: 100%; min-height: 33px; padding-inline: 5px; font-size: 12px; }
   .job-main-nav > button > span { min-width: 17px; height: 17px; font-size: 10px; }

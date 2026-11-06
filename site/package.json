@@ -15,8 +15,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "test": "node --experimental-strip-types --test tests/*.test.ts tests/backup.test.mjs tests/processing-jobs.test.mjs",
-    "test:ai": "node --experimental-strip-types --test tests/ai-compat.test.mjs",
-    "ledger:pull": "node scripts/ledger-sync.mjs"
+    "test:ai": "node --experimental-strip-types --test tests/ai-compat.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

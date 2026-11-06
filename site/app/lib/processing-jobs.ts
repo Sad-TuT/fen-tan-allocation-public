@@ -4,7 +4,7 @@ import ExcelJS from "exceljs";
 import { env } from "./node-runtime";
 import { ALLOCATION_RULE_VERSION, planAllocation, validateAllocationPlan } from "./allocation";
 import {
-  assertDistinctSourceBalance, digest, generateBatchFiles, parseSource, parseTaxOverrides, parseTaxes, sourceBalanceFingerprint, type ImportedSource,
+  assertDistinctSourceBalance, digest, generateBatchFiles, parseSource, parseTaxOverrides, parseTaxes, type ImportedSource,
   type ProductHistory, type TaxOverride, type TaxRecord,
 } from "./spreadsheets";
 import { normalizeSpreadsheetNamespaces } from "./xlsx-namespace-compat";
@@ -220,32 +220,19 @@ async function saveJob(row: JobRow, user: AppUser, data: JobData, eventType: str
   if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) throw new ProcessingJobError("本批任务已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
   return { row: await getRow(row.id, user), data: nextData };
 }
-async function insertBlankJob(
-  user: AppUser, parentId: string | null, data: JobData,
-  parentSnapshot?: { revision: number; dataKey: string; ownerId: string },
-): Promise<ProcessingJob> {
+async function insertBlankJob(user: AppUser, data: JobData): Promise<ProcessingJob> {
   ensureWriter(user);
   const id = newId();
-  const initial = { ...data, schemaVersion: 1 as const, revision: 0, parentJobId: parentId };
+  const initial = { ...data, schemaVersion: 1 as const, revision: 0, parentJobId: null };
   const key = await writeJson(id, 0, initial);
   const createdAt = new Date().toISOString();
-  const ownerId = parentSnapshot?.ownerId ?? user.userId;
-  try {
-    const insert = parentSnapshot
-      ? db().prepare("INSERT INTO processing_jobs (id,owner_id,parent_job_id,status,revision,data_key,source_fingerprint,created_at,updated_at) SELECT ?,?,?, 'draft',0,?,?,?,? WHERE EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND owner_id=? AND status='adopted' AND revision=? AND data_key=?)")
-        .bind(id, ownerId, parentId, key, fingerprint(initial.sources), createdAt, createdAt, parentId, parentSnapshot.ownerId, parentSnapshot.revision, parentSnapshot.dataKey)
-      : db().prepare("INSERT INTO processing_jobs (id,owner_id,parent_job_id,status,revision,data_key,source_fingerprint,created_at,updated_at) VALUES (?,?,?,'draft',0,?,?,?,?)")
-        .bind(id, ownerId, parentId, key, fingerprint(initial.sources), createdAt, createdAt);
-    const event = db().prepare(parentId
-      ? "INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) SELECT ?,?,?,'job_created',0,?,? WHERE EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND owner_id=? AND parent_job_id=? AND status='draft' AND data_key=?)"
-      : "INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) VALUES (?, ?, ?, 'job_created', 0, ?, ?)")
-      .bind(newId(), id, user.userId, createdAt, JSON.stringify({ parentJobId: parentId }), ...(parentId ? [id, user.userId, parentId, key] : []));
-    const inserted = await db().batch([insert, event]);
-    if (inserted[0].meta.changes !== 1 || inserted[1].meta.changes !== 1) throw new ProcessingJobError("上一批状态已变化，未创建后续任务。请刷新后重试。", 409, "PARENT_CHANGED");
-  } catch (error) {
-    if (parentId && String(error).includes("processing_jobs_single_active_child")) throw new ProcessingJobError("上一批已有一条未作废的后续任务。请继续那条任务，或先作废后再新建。", 409, "ACTIVE_CHILD_EXISTS");
-    throw error;
-  }
+  const inserted = await db().batch([
+    db().prepare("INSERT INTO processing_jobs (id,owner_id,parent_job_id,status,revision,data_key,source_fingerprint,created_at,updated_at) VALUES (?,?,NULL,'draft',0,?,?,?,?)")
+      .bind(id, user.userId, key, fingerprint(initial.sources), createdAt, createdAt),
+    db().prepare("INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) VALUES (?, ?, ?, 'job_created', 0, ?, ?)")
+      .bind(newId(), id, user.userId, createdAt, JSON.stringify({ parentJobId: null })),
+  ]);
+  if (inserted[0].meta.changes !== 1 || inserted[1].meta.changes !== 1) throw new ProcessingJobError("未能创建新批次，请刷新后重试。", 409, "JOB_CREATE_FAILED");
   const row = await getRow(id, user);
   return publicJob(row, initial);
 }
@@ -255,57 +242,9 @@ async function verifiedBytes(file: StoredFile): Promise<Uint8Array> {
   return bytes;
 }
 
-export async function createProcessingJob(user: AppUser, parentIdValue?: unknown): Promise<ProcessingJob> {
+export async function createProcessingJob(user: AppUser): Promise<ProcessingJob> {
   ensureWriter(user);
-  if (!parentIdValue) return insertBlankJob(user, null, blankData(null));
-  const { row: parent } = await loadJob(parentIdValue, user);
-  if (parent.status !== "adopted") throw new ProcessingJobError("只能从人工采用的剩余表新建下一批。", 409, "PARENT_NOT_ADOPTED");
-  return continueProcessingJob(parent.id, Number(parent.revision), user);
-}
-export async function continueProcessingJob(idValue: unknown, revisionValue: unknown, user: AppUser): Promise<ProcessingJob> {
-  ensureWriter(user);
-  const { row, data } = await loadJob(idValue, user);
-  if (Number(row.revision) !== revisionNumber(revisionValue)) throw new ProcessingJobError("上一批已变化，请刷新后重试。", 409, "STALE_REVISION");
-  if (row.status !== "adopted") throw new ProcessingJobError("只能从人工采用的候选结果继续。", 409, "PARENT_NOT_ADOPTED");
-  if (!data.nextSourceFiles.length) throw new ProcessingJobError("上一批没有生成可继续使用的余额表。", 409, "NO_REMAINING_SOURCES");
-  const childExists = await db().prepare("SELECT 1 AS present FROM processing_jobs WHERE parent_job_id=? AND status<>'discarded' LIMIT 1").bind(row.id).first<{ present: number }>();
-  if (childExists) {
-    const owner = ownerFilter(user, "owner_id");
-    const active = await db().prepare("SELECT * FROM processing_jobs WHERE parent_job_id=? AND status<>'discarded'" + owner.sql + " LIMIT 1")
-      .bind(row.id, ...owner.args).first<JobRow>();
-    if (active) return publicJob(active, await loadData(active));
-    throw new ProcessingJobError("这份剩余余额已有未作废的后续任务，请从任务列表继续。", 409, "ACTIVE_CHILD_EXISTS");
-  }
-  const inherited: StoredFile[] = [];
-  const sources: ImportedSource[] = [];
-  for (const next of [...data.nextSourceFiles].sort((a,b) => (data.sources.find(s=>s.id===a.sourceId)?.priority ?? 0) - (data.sources.find(s=>s.id===b.sourceId)?.priority ?? 0))) {
-    const original = data.sources.find(source => source.id === next.sourceId);
-    const file = data.files.find(item => item.id === next.fileId && item.role === "source-remaining");
-    if (!original || !file) throw new ProcessingJobError("上一批剩余来源文件索引不完整。", 500, "REMAINING_MANIFEST_INVALID");
-    const parsed = await parseSource(await verifiedBytes(file), file.fileName, original.priority);
-    parsed.allowBlankDepartment = original.allowBlankDepartment === true;
-    sources.push(trimSource(parsed));
-    inherited.push({ ...file, id: newId(), role: "source", sourceId: parsed.id, priority: parsed.priority });
-  }
-  const tax = data.files.find(file => file.id === data.taxFileId);
-  const taxOverrides = data.files.find(file => file.id === data.taxOverrideFileId);
-  const template = data.files.find(file => file.id === data.templateFileId);
-  const clone = (file?: StoredFile) => {
-    if (!file) return null;
-    const copied = { ...file, id: newId() };
-    inherited.push(copied);
-    return copied.id;
-  };
-  const next = blankData(row.id);
-  next.sources = sources;
-  next.taxes = data.taxes;
-  next.taxOverrides = data.taxOverrides;
-  next.files = inherited;
-  next.taxFileId = clone(tax);
-  next.taxOverrideFileId = clone(taxOverrides);
-  next.templateFileId = clone(template);
-  next.productHistory = collectHistory(sources);
-  return insertBlankJob(user, row.id, next, { revision: Number(row.revision), dataKey: row.data_key, ownerId: row.owner_id });
+  return insertBlankJob(user, blankData(null));
 }
 export async function listProcessingJobs(user: AppUser): Promise<{ jobs: ProcessingJobSummary[]; summary: { total: number; draft: number; prepared: number; adopted: number; discarded: number } }> {
   if (user.mustChangePassword) throw new ProcessingJobError("请先修改初始密码。", 403, "PASSWORD_CHANGE_REQUIRED");
@@ -462,10 +401,10 @@ async function clarifyAudit(bytes: Uint8Array): Promise<Uint8Array> {
   await workbook.xlsx.load(bytes as never);
   const sheet = workbook.getWorksheet("本批核对");
   if (!sheet) throw new ProcessingJobError("核对文件缺少必需的核对工作表。", 500, "AUDIT_SHEET_MISSING");
-  sheet.addRow(["处理状态", "候选文件，待人工查看并决定是否采用；本结果尚未记入共享余额。"]);
+  sheet.addRow(["处理状态", "候选文件，待人工核对；本批结果仅供归档和下载。"]);
   for (let row = 1; row <= sheet.rowCount; row++) {
     if (String(sheet.getCell(row, 1).value ?? "").includes("双agent")) {
-      sheet.getCell(row, 2).value = "本批按文件模式生成候选，不自动启动双agent复核或正式入账。";
+      sheet.getCell(row, 2).value = "本批按文件模式生成候选，由用户和独立复核流程核对；不会自动带入下一批。";
     }
   }
   return new Uint8Array(await workbook.xlsx.writeBuffer());
@@ -544,7 +483,7 @@ export async function adoptProcessingJob(input: { id: unknown; revision: unknown
   const revision = revisionNumber(input.revision);
   if (input.ack !== "I_REVIEWED_FILES") throw new ProcessingJobError("请先确认已查看本批所有生成文件。", 400, "REVIEW_ACK_REQUIRED");
   const { row, data } = await loadJob(id, user);
-  if (row.status !== "prepared" && row.status !== "adopted") throw new ProcessingJobError("只有待人工核验的候选批次可以标记采用。", 409, "JOB_NOT_PREPARED");
+  if (row.status !== "prepared" && row.status !== "adopted") throw new ProcessingJobError("只有待人工核对的本批候选可以确认完成。", 409, "JOB_NOT_PREPARED");
   const outputs = data.files.filter(file => ["invoice", "source-marked", "source-remaining", "audit"].includes(file.role));
   if (row.status === "adopted") {
     const repeated = input.fileHashes as Record<string, unknown> | null;
@@ -552,15 +491,15 @@ export async function adoptProcessingJob(input: { id: unknown; revision: unknown
       Object.keys(repeated).length === outputs.length &&
       outputs.every(file => repeated[file.id] === file.sha256);
     if (matches) return publicJob(row, data);
-    throw new ProcessingJobError("本批已采用，且文件版本与保存记录不同。", 409, "ADOPTED_FILE_MISMATCH");
+    throw new ProcessingJobError("本批已完成，但文件版本与保存记录不同。", 409, "ADOPTED_FILE_MISMATCH");
   }
   if (data.plan?.ruleVersion !== ALLOCATION_RULE_VERSION) {
-    throw new ProcessingJobError("该候选文件按旧部门分组规则生成，不能直接采用。请保留原始输入并重新按当前规则试算。", 409, "ALLOCATION_RULE_VERSION_STALE");
+    throw new ProcessingJobError("该候选文件按旧部门分组规则生成，不能直接确认完成。请保留原始输入并重新按当前规则试算。", 409, "ALLOCATION_RULE_VERSION_STALE");
   }
   const recomputed = planAllocation(data.sources, data.plan.priceCents, data.plan.quantity);
   const replay = validateAllocationPlan(data.sources, data.plan.priceCents, data.plan.quantity, data.plan);
   if (!replay.valid || JSON.stringify(data.plan) !== JSON.stringify(recomputed)) {
-    throw new ProcessingJobError("候选方案与当前确定性分摊规则重算结果不一致，不能采用。请重新试算并核对文件。", 409, "PLAN_REPLAY_MISMATCH");
+    throw new ProcessingJobError("候选方案与当前确定性分摊规则重算结果不一致，不能确认完成。请重新试算并核对文件。", 409, "PLAN_REPLAY_MISMATCH");
   }
   if (Number(row.revision) !== revision) throw new ProcessingJobError("本批任务已变化，请刷新后重试。", 409, "STALE_REVISION");
   const hashes = input.fileHashes;
@@ -569,11 +508,7 @@ export async function adoptProcessingJob(input: { id: unknown; revision: unknown
   if (Object.keys(supplied).sort().join("\0") !== outputs.map(file => file.id).sort().join("\0") ||
       outputs.some(file => supplied[file.id] !== file.sha256)) throw new ProcessingJobError("候选文件清单与保存版本不一致，请刷新后重新查看。", 409, "FILE_CONFIRMATION_MISMATCH");
   for (const file of data.files) await verifiedBytes(file);
-  const sourceLocks = await Promise.all(data.sources.map(async source => ({
-    sha256: source.sha256,
-    balanceFingerprint: await sourceBalanceFingerprint(source),
-  })));
-  const sourceHashes = sourceLocks.map(source => source.sha256);
+  const sourceHashes = data.sources.map(source => source.sha256);
   const adoptedAt = new Date().toISOString();
   const nextRevision = revision + 1;
   const next = { ...data, revision: nextRevision, updatedAt: adoptedAt, adoptedAt, adoptedBy: user.userId };
@@ -581,31 +516,16 @@ export async function adoptProcessingJob(input: { id: unknown; revision: unknown
   const statements = [
     db().prepare("UPDATE processing_jobs SET data_key=?,status='adopted',revision=?,updated_at=?,adopted_at=?,adopted_by=? WHERE id=? AND owner_id=? AND status='prepared' AND revision=? AND data_key=?")
       .bind(key, nextRevision, adoptedAt, adoptedAt, user.userId, row.id, row.owner_id, revision, row.data_key),
-    ...sourceLocks.map(source => db().prepare("INSERT INTO processing_active_sources (owner_id,source_sha256,balance_fingerprint,job_id,created_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND owner_id=? AND status='adopted' AND revision=? AND data_key=?)")
-      .bind(row.owner_id, source.sha256, source.balanceFingerprint, row.id, adoptedAt, row.id, row.owner_id, nextRevision, key)),
     db().prepare("INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) SELECT ?,?,?, 'candidate_adopted',?,?,? WHERE EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND status='adopted' AND revision=? AND data_key=?)")
       .bind(newId(), row.id, user.userId, nextRevision, adoptedAt, JSON.stringify({
         outputCount: outputs.length, outputHashes: Object.fromEntries(outputs.map(file => [file.id, file.sha256])), sourceHashes,
       }), row.id, nextRevision, key),
   ];
-  try {
-    const results = await db().batch(statements);
-    if (results[0].meta.changes !== 1 || results.slice(1).some(item => item.meta.changes !== 1)) {
-      throw new ProcessingJobError("本批采用状态已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
-    }
-  } catch (error) {
-    if (error instanceof ProcessingJobError) throw error;
-    if (String(error).includes("processing_active_sources") || String(error).includes("UNIQUE constraint failed")) {
-      throw new ProcessingJobError("这份资金表或同一金额余额已在此前采用。请从最新剩余表继续，避免重复分摊。", 409, "SOURCE_ALREADY_ADOPTED");
-    }
-    throw error;
+  const results = await db().batch(statements);
+  if (results.some(item => item.meta.changes !== 1)) {
+    throw new ProcessingJobError("本批完成状态已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
   }
   return publicJob(await getRow(row.id, user), next);
-}
-async function ensureNoChild(jobId: string): Promise<void> {
-  const child = await db().prepare("SELECT 1 AS present FROM processing_jobs WHERE parent_job_id=? AND status<>'discarded' LIMIT 1")
-    .bind(jobId).first<{ present: number }>();
-  if (child) throw new ProcessingJobError("已有后续批次使用这份余额，不能作废本批。请从本批开始逐批处理后续任务。", 409, "DOWNSTREAM_JOBS_EXIST");
 }
 export async function discardProcessingJob(input: { id: unknown; revision: unknown; reason: unknown }, user: AppUser): Promise<ProcessingJob> {
   ensureWriter(user);
@@ -613,22 +533,19 @@ export async function discardProcessingJob(input: { id: unknown; revision: unkno
   if (row.status === "discarded" && typeof input.reason === "string" && input.reason.trim() === data.discardReason) return publicJob(row, data);
   if (Number(row.revision) !== revisionNumber(input.revision)) throw new ProcessingJobError("本批任务已变化，请刷新后重试。", 409, "STALE_REVISION");
   if (typeof input.reason !== "string" || input.reason.trim().length < 2 || input.reason.trim().length > 300) throw new ProcessingJobError("请写明2到300字的作废原因。");
-  await ensureNoChild(row.id);
   const now = new Date().toISOString();
   const nextRevision = Number(row.revision) + 1;
   const next = { ...data, revision: nextRevision, updatedAt: now, discardedAt: now, discardReason: input.reason.trim() };
   const key = await writeJson(row.id, nextRevision, next);
   const owner = ownerFilter(user, "owner_id");
   const statements = [
-    db().prepare("UPDATE processing_jobs SET data_key=?,status='discarded',revision=?,updated_at=?,discarded_at=?,discard_reason=? WHERE id=?" + owner.sql + " AND revision=? AND status=? AND data_key=? AND NOT EXISTS (SELECT 1 FROM processing_jobs AS child WHERE child.parent_job_id=processing_jobs.id AND child.status<>'discarded')")
+    db().prepare("UPDATE processing_jobs SET data_key=?,status='discarded',revision=?,updated_at=?,discarded_at=?,discard_reason=? WHERE id=?" + owner.sql + " AND revision=? AND status=? AND data_key=?")
       .bind(key, nextRevision, now, now, input.reason.trim(), row.id, ...owner.args, Number(row.revision), row.status, row.data_key),
-    db().prepare("DELETE FROM processing_active_sources WHERE job_id=? AND owner_id=? AND EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND owner_id=? AND status='discarded' AND revision=? AND data_key=? AND NOT EXISTS (SELECT 1 FROM processing_jobs AS child WHERE child.parent_job_id=processing_jobs.id AND child.status<>'discarded'))")
-      .bind(row.id, row.owner_id, row.id, row.owner_id, nextRevision, key),
     db().prepare("INSERT INTO processing_job_events (id,job_id,actor_id,event_type,revision,created_at,detail_json) SELECT ?,?,?,'job_discarded',?,?,? WHERE EXISTS (SELECT 1 FROM processing_jobs WHERE id=? AND status='discarded' AND revision=? AND data_key=?)")
       .bind(newId(), row.id, user.userId, nextRevision, now, JSON.stringify({ reason: input.reason.trim(), previousStatus: row.status }), row.id, nextRevision, key),
   ];
   const result = await db().batch(statements);
-  if (result[0].meta.changes !== 1 || result[2].meta.changes !== 1) throw new ProcessingJobError("本批任务已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
+  if (result[0].meta.changes !== 1 || result[1].meta.changes !== 1) throw new ProcessingJobError("本批任务已被其他操作更新，请刷新后重试。", 409, "STALE_REVISION");
   return publicJob(await getRow(row.id, user), next);
 }
 async function loadPreviewWorkbook(file: StoredFile, bytes: Uint8Array): Promise<ExcelJS.Workbook> {

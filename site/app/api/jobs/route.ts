@@ -2,7 +2,7 @@ import { getAppUser } from "../../lib/app-auth";
 import { hasTrustedOrigin, requestAddress } from "../../lib/request-security";
 import { tryAcquireUploadSlot } from "../../lib/upload-gate";
 import {
-  adoptProcessingJob, continueProcessingJob, createProcessingJob, discardProcessingJob,
+  adoptProcessingJob, createProcessingJob, discardProcessingJob,
   downloadProcessingJobFile, getProcessingJob, listProcessingJobs, prepareProcessingJob,
   previewProcessingJobFile, ProcessingJobError, simulateProcessingJob, uploadProcessingJobFile, pasteSourceProcessingJob,
 } from "../../lib/processing-jobs";
@@ -143,8 +143,7 @@ export async function POST(request: Request) {
     } catch { throw new ProcessingJobError("请求内容必须是有效的JSON对象。", 400, "INVALID_JSON"); }
     const action = String(body.action ?? "");
     let job;
-    if (action === "create") job = await createProcessingJob(user, body.parentJobId);
-    else if (action === "continue") job = await continueProcessingJob(body.id, body.revision, user);
+    if (action === "create") job = await createProcessingJob(user);
     else if (action === "simulate") {
       return reply(await simulateProcessingJob({
         id: body.id, revision: body.revision, product: body.product, price: body.price, quantity: body.quantity,

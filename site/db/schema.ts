@@ -1,8 +1,9 @@
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
-// Large immutable workspace/batch payloads live in R2. D1 owns their current
-// pointers, the balance version and the transaction that posts a reviewed batch.
+// Legacy shared-ledger records remain defined so existing audit databases can
+// still be read and backed up. New processing jobs never write these tables or
+// carry a balance into another batch.
 export const allocationBatches = sqliteTable("allocation_batches", {
   id: text("id").primaryKey(),
   product: text("product").notNull(),
@@ -105,6 +106,8 @@ export const processingJobEvents = sqliteTable("processing_job_events", {
   detailJson: text("detail_json").notNull(),
 }, (table) => [index("processing_job_events_job_created").on(table.jobId, table.createdAt, table.id)]);
 
+// Kept for migration compatibility. New batches never reserve or write sources
+// here because each batch receives a fresh balance upload.
 export const processingActiveSources = sqliteTable("processing_active_sources", {
   ownerId: text("owner_id").notNull().references(() => appUsers.id, { onDelete: "restrict" }),
   sourceSha256: text("source_sha256").notNull(),

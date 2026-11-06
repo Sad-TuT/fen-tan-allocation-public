@@ -9,7 +9,7 @@ export default function NotFound(){
   <Card className="auth-card">
    <CardHeader>
     <CardTitle>页面不存在</CardTitle>
-    <CardDescription>这个地址没有对应的页面，可能是链接输入有误，或该批次已经不在当前账簿中。</CardDescription>
+        <CardDescription>这个地址没有对应的页面，可能是链接输入有误，或该批次记录不存在。</CardDescription>
    </CardHeader>
    <CardContent>
     <Button asChild><Link href="/">返回工作台</Link></Button>

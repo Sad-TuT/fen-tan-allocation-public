@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
-import { ArrowDownToLine, ArrowUpRight, BookOpen, Check, CircleAlert, CircleCheck, CircleHelp, ClipboardCheck, FileSpreadsheet, LoaderCircle, LockKeyhole, Plus, RefreshCw, Search, Settings2, Upload, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, CircleHelp, ClipboardCheck, FileSpreadsheet, LoaderCircle, LockKeyhole, Plus, RefreshCw, Search, Settings2, Upload, X } from "lucide-react";
 import { AiWorkspaceAssistant } from "./ai-panel";
 import { WorkspaceDataPreview, type VisibleData } from "./workspace-data-preview";
 import { Badge } from "@/components/ui/badge";
@@ -49,7 +49,7 @@ function statusInfo(status: ProcessingJob["status"]) {
   switch (status) {
     case "draft": return { label: "准备中", className: "job-state-draft" };
     case "prepared": return { label: "待人工核对", className: "job-state-prepared" };
-    case "adopted": return { label: "已采用", className: "job-state-adopted" };
+    case "adopted": return { label: "已完成", className: "job-state-adopted" };
     case "discarded": return { label: "已作废", className: "job-state-discarded" };
   }
 }
@@ -70,7 +70,7 @@ function actionRequest<T>(body: ProcessingJobRequest) {
 }
 
 function StepRail({ current }: { current: 1 | 2 | 3 | 4 }) {
-  const steps = ["选择本批资料", "录入与试算", "预览候选文件", "人工确认采用"];
+  const steps = ["上传本批余额", "录入与试算", "预览候选文件", "确认本批完成"];
   return <ol className="job-steps" aria-label={`本批进度，第 ${current} 步，共 4 步`}>
     {steps.map((step, index) => {
       const number = index + 1;
@@ -183,16 +183,16 @@ function FileImport({
   </label>;
 
   return <div className="job-import">
-    <div className="job-import-heading"><div><h2>本批资金与资料</h2><p>每次计算都从这批明确上传的资金余额开始。</p></div>{job.sourceCount > 0 && <Badge variant="outline" className="job-count-badge">{job.sourceCount} 份资金</Badge>}</div>
+    <div className="job-import-heading"><div><h2>本批余额与资料</h2><p>每个新批次都必须重新上传余额表。这里是本批唯一的资金来源。</p></div>{job.sourceCount > 0 && <Badge variant="outline" className="job-count-badge">{job.sourceCount} 份资金来源</Badge>}</div>
     <div className="job-upload-list">
-      <div className="job-upload-with-priority">{inputFile("source", `添加第 ${priority} 顺位本批资金`, null)}<Button className="job-source-paste-option" type="button" variant="outline" size="sm" disabled={disabled || !!busyFile} onClick={() => setPasteOpen(true)}>粘贴Excel明细</Button><label className="job-source-priority"><span>来源顺序</span><Input aria-label="资金来源顺序" type="number" min="1" max="100" value={priority} onChange={(event) => setPriorityOverride(event.target.value)} disabled={disabled || !!busyFile} /></label></div>
+      <div className="job-upload-with-priority">{inputFile("source", `添加第 ${priority} 顺位余额表`, null)}<Button className="job-source-paste-option" type="button" variant="outline" size="sm" disabled={disabled || !!busyFile} onClick={() => setPasteOpen(true)}>粘贴Excel明细</Button><label className="job-source-priority"><span>来源顺序</span><Input aria-label="资金来源顺序" type="number" min="1" max="100" value={priority} onChange={(event) => setPriorityOverride(event.target.value)} disabled={disabled || !!busyFile} /></label></div>
       {job.sources.map((source) => <div className="job-current-source" key={source.id}><span className="source-index">{source.priority}</span><span className="job-current-source-copy"><strong title={source.name}>{source.name}</strong><small>{source.rowCount.toLocaleString("zh-CN")} 行 · 本批可用 {money(source.availableCents)}</small></span><span className="job-current-source-balance">{money(source.availableCents)}</span></div>)}
       {inputFile("tax", "税务主体表（可选）", job.taxFile?.name ?? null)}
       {inputFile("tax-overrides", "税务修正 JSON（可选）", job.taxOverrideFile?.name ?? null)}
       {inputFile("template", "开票模板（必需）", job.templateFile?.name ?? null)}
     </div>
     {error && <p className="job-inline-error" role="alert"><CircleAlert size={16} />{error}</p>}
-    <div className="job-upload-note"><LockKeyhole size={15} /><p>每批使用自己上传的余额版本。上传、试算和生成候选文件都不会改动已采用版本。</p></div>
+    <div className="job-upload-note"><LockKeyhole size={15} /><p>本批余额只属于这一批。下一批请重新上传本批生成的剩余表。</p></div>
     <Dialog open={pasteOpen} onOpenChange={(open) => { setPasteOpen(open); if (!open) { setPasteAck(false); setError(""); } }}><DialogContent className="job-paste-dialog"><DialogHeader><DialogTitle>粘贴本批剩余资金明细</DialogTitle><DialogDescription>从Excel复制含表头的单元格区域，再粘贴到下方。文本上限 1 MB。</DialogDescription></DialogHeader>
       <pre className="job-paste-example" aria-label="支持的Excel表头示例">申领人　申领部门　使用中心　成本中心　成本　费用承担法律主体　申领用途</pre>
       <label className="job-paste-input"><span>Excel单元格数据</span><textarea value={pasteText} maxLength={1024 * 1024} rows={9} disabled={!!busyFile} onChange={(event) => setPasteText(event.target.value)} placeholder="在此按 Ctrl+V 粘贴表头与明细" /> <small>复制Excel单元格后，用 Ctrl+V 粘贴；保持各列对应的分隔。</small></label>
@@ -205,16 +205,16 @@ function FileImport({
 
 function EmptyWork({ onCreate, existing, onResume, disabled }: { onCreate: () => void; existing?: ProcessingJobSummary; onResume: () => void; disabled: boolean }) {
   return <div className="job-welcome">
-    <div className="job-welcome-main"><span className="job-welcome-mark"><FileSpreadsheet size={21} /></span><h2>从本批资金开始</h2><p>上传余额和商品信息，先精确试算；需要生成开票文件时，再补充开票模板。</p><Button onClick={onCreate} disabled={disabled}><Plus size={17} />开始新批次</Button></div>
+    <div className="job-welcome-main"><span className="job-welcome-mark"><FileSpreadsheet size={21} /></span><h2>上传本批余额开始</h2><p>每个新批次都重新上传余额表；上传后填写商品信息并精确试算。</p><Button onClick={onCreate} disabled={disabled}><Plus size={17} />开始新批次</Button></div>
     {existing && <div className="job-resume"><div><span>最近打开</span><strong>{existing.product || "未命名批次"}</strong><small>更新于 {readableDate(existing.updatedAt)}</small></div><JobStatus status={existing.status} /><Button variant="outline" onClick={onResume}>继续处理<ArrowUpRight size={15} /></Button></div>}
-      <div className="job-welcome-steps"><span>导入本批资金</span><i aria-hidden="true" /><span>填写本批商品</span><i aria-hidden="true" /><span>生成剩余资金</span><i aria-hidden="true" /><span>你确认采用</span></div>
+      <div className="job-welcome-steps"><span>上传本批余额</span><i aria-hidden="true" /><span>填写本批商品</span><i aria-hidden="true" /><span>生成结果文件</span><i aria-hidden="true" /><span>确认本批完成</span></div>
   </div>;
 }
 
 function JobTable({ jobs, selectedId, onOpen }: { jobs: ProcessingJobSummary[]; selectedId: string; onOpen: (id: string) => void }) {
-  if (!jobs.length) return <div className="job-history-empty"><FileSpreadsheet size={22} /><strong>还没有批次</strong><p>新建一次处理后，输入、候选文件和最终采用的版本会保存在这里。</p></div>;
+  if (!jobs.length) return <div className="job-history-empty"><FileSpreadsheet size={22} /><strong>还没有批次</strong><p>新建一次处理后，上传的余额、候选文件和完成状态会保存在这里。</p></div>;
   return <div className="job-table-scroll"><Table className="job-history-table"><TableHeader><TableRow><TableHead>批次</TableHead><TableHead>输入来源</TableHead><TableHead className="text-right">目标金额</TableHead><TableHead className="text-right">数量</TableHead><TableHead>状态</TableHead><TableHead>最后更新</TableHead><TableHead /></TableRow></TableHeader><TableBody>{jobs.map((job) => <TableRow key={job.id} data-selected={selectedId === job.id}>
-    <TableCell><button type="button" className="job-history-open" onClick={() => onOpen(job.id)}><strong>{job.product || "未填写商品"}</strong><small>{job.id.slice(0, 8)}{job.parentJobId ? " · 接续上批余额" : ""}</small></button></TableCell>
+    <TableCell><button type="button" className="job-history-open" onClick={() => onOpen(job.id)}><strong>{job.product || "未填写商品"}</strong><small>{job.id.slice(0, 8)}</small></button></TableCell>
     <TableCell>{job.sourceCount} 份 · {job.fileCount} 个文件</TableCell><TableCell className="text-right numeric">{job.totalCents === null ? "—" : money(job.totalCents)}</TableCell><TableCell className="text-right numeric">{job.quantity === null ? "—" : quantityFormat(job.quantity)}</TableCell><TableCell><JobStatus status={job.status} /></TableCell><TableCell className="muted">{readableDate(job.updatedAt)}</TableCell><TableCell className="text-right"><Button type="button" variant="ghost" size="sm" onClick={() => onOpen(job.id)}>{selectedId === job.id ? "已打开" : "打开批次"}</Button></TableCell>
   </TableRow>)}</TableBody></Table></div>;
 }
@@ -223,7 +223,7 @@ function HistoryView({ jobs, selectedId, query, onQuery, onOpen }: { jobs: Proce
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase("zh-CN"));
   const filtered = useMemo(() => jobs.filter((job) => `${job.product ?? ""} ${job.id}`.toLocaleLowerCase("zh-CN").includes(deferredQuery)), [jobs, deferredQuery]);
   return <section className="job-content-view" aria-labelledby="job-history-heading">
-    <div className="job-page-heading"><div><span className="job-page-kicker">批次记录</span><h1 id="job-history-heading">处理历史</h1><p>按批查找上传的余额、候选文件和已采用的版本。</p></div>
+    <div className="job-page-heading"><div><span className="job-page-kicker">批次记录</span><h1 id="job-history-heading">处理历史</h1><p>按批查找上传的余额、候选文件和完成状态。</p></div>
       <label className="job-search"><Search size={16} /><span className="sr-only">搜索批次</span><Input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="搜索商品名称或批次号" /></label>
     </div>
     <JobTable jobs={filtered} selectedId={selectedId} onOpen={onOpen} />
@@ -242,7 +242,7 @@ function DataView({ jobs, job, onSelectJob }: { jobs: ProcessingJobSummary[]; jo
   </section>;
 }
 
-export default function Dashboard({ user, onOpenLegacy, onOpenAccount }: { user: SessionUser; onOpenLegacy: () => void; onOpenAccount: () => void }) {
+export default function Dashboard({ user, onOpenAccount }: { user: SessionUser; onOpenAccount: () => void }) {
   const locationSnapshot = useSyncExternalStore(subscribeToRoute, routeSnapshot, serverRouteSnapshot);
   const { jobId: selectedId, view } = useMemo(() => readRoute(locationSnapshot), [locationSnapshot]);
   const [jobs, setJobs] = useState<ProcessingJobSummary[]>([]);
@@ -299,11 +299,11 @@ export default function Dashboard({ user, onOpenLegacy, onOpenAccount }: { user:
     return () => { active = false; controller.abort(); };
   }, [selectedId]);
 
-  async function createJob(parent?: ProcessingJobSummary) {
+  async function createJob() {
     if (!canWrite || creating) return;
     setCreating(true); setLoadError("");
     try {
-      const result = await actionRequest<JobResponse>({ action: parent ? "continue" : "create", ...(parent ? { id: parent.id, revision: parent.revision } : {}) } as ProcessingJobRequest);
+      const result = await actionRequest<JobResponse>({ action: "create" });
       setJob(result.job); writeRoute(result.job.id, "workspace");
       await refreshJobs();
     } catch (error) { setLoadError(error instanceof Error ? error.message : "无法新建批次，请重试。"); }
@@ -330,7 +330,7 @@ export default function Dashboard({ user, onOpenLegacy, onOpenAccount }: { user:
     <header className="job-app-header"><div className="job-app-header-inner">
       <button type="button" className="job-brand" aria-label="返回本批工作区" onClick={() => writeRoute(selectedId, "workspace")}><span className="job-brand-icon"><FileSpreadsheet size={19} /></span><span><strong>分摊</strong><small>Allocation workspace</small></span></button>
       <nav className="job-main-nav" aria-label="主导航">{([ ["workspace", "本批工作区"], ["history", "批次记录"], ["data", "表格数据"] ] as [View, string][]).map(([id, label]) => <button type="button" key={id} className={view === id ? "is-current" : ""} aria-current={view === id ? "page" : undefined} onClick={() => writeRoute(selectedId, id)}>{label}{id === "history" && summary.total > 0 && <span>{summary.total}</span>}</button>)}</nav>
-      <div className="job-user-menu"><span className="job-user-avatar" aria-hidden="true">{user.name.slice(0, 1)}</span><span><strong>{user.name}</strong><small>{user.role === "admin" ? "管理员" : user.role === "operator" ? "操作员" : "只读"}</small></span><button type="button" className="job-account-shortcut" aria-label="账户设置" title="账户设置" onClick={onOpenAccount}><Settings2 size={16} /></button><button type="button" className="job-manage-shortcut" onClick={onOpenLegacy}><BookOpen size={15} /><span>管理入口</span></button></div>
+      <div className="job-user-menu"><span className="job-user-avatar" aria-hidden="true">{user.name.slice(0, 1)}</span><span><strong>{user.name}</strong><small>{user.role === "admin" ? "管理员" : user.role === "operator" ? "操作员" : "只读"}</small></span><button type="button" className="job-account-shortcut" aria-label="账户设置" title="账户设置" onClick={onOpenAccount}><Settings2 size={16} /></button></div>
     </div></header>
 
     <main id="job-main" className="job-main-content" tabIndex={-1}>
@@ -345,28 +345,26 @@ export default function Dashboard({ user, onOpenLegacy, onOpenAccount }: { user:
         canWrite={canWrite}
         onJobUpdate={updateJob}
         onNewBatch={() => { setJob(null); writeRoute("", "workspace"); }}
-        onContinueFrom={() => void createJob(job)}
         onChooseJob={() => writeRoute(job.id, "history")}
       /></div>}
       {!job && view === "workspace" && !pageLoading && <EmptyWork onCreate={() => void createJob()} existing={latestResumable} onResume={() => latestResumable && void selectJob(latestResumable.id)} disabled={!canWrite || creating || pageLoading} />}
       {view === "history" && <HistoryView jobs={jobs} selectedId={selectedId} query={query} onQuery={setQuery} onOpen={(id) => selectJob(id)} />}
       {view === "data" && <DataView jobs={jobs} job={job?.id === selectedId ? job : null} onSelectJob={(id) => selectJob(id, "data")} />}
-      <footer className="job-app-footer"><span>分摊 · Allocation</span><span>输入版本可查 · 候选结果可核 · 采用由你确认</span></footer>
+      <footer className="job-app-footer"><span>分摊 · Allocation</span><span>每批重新上传余额 · 候选结果可核 · 完成由你确认</span></footer>
     </main>
   </div>;
 }
 
-function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch, onContinueFrom, onChooseJob }: { job: ProcessingJob; userId: string; active: boolean; canWrite: boolean; onJobUpdate: (job: ProcessingJob) => void; onNewBatch: () => void; onContinueFrom: () => void; onChooseJob: () => void }) {
-  const startsFromAnotherBatch = !!job.parentJobId && job.status === "draft";
-  const [product, setProduct] = useState(startsFromAnotherBatch ? "" : job.product ?? "");
-  const [price, setPrice] = useState(startsFromAnotherBatch || job.priceCents === null ? "" : (job.priceCents / 100).toFixed(2));
-  const [quantity, setQuantity] = useState(startsFromAnotherBatch || job.quantity === null ? "" : String(job.quantity));
-  const [simulation, setSimulation] = useState<AllocationPlan | null>(startsFromAnotherBatch ? null : job.plan);
+function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch, onChooseJob }: { job: ProcessingJob; userId: string; active: boolean; canWrite: boolean; onJobUpdate: (job: ProcessingJob) => void; onNewBatch: () => void; onChooseJob: () => void }) {
+  const [product, setProduct] = useState(job.product ?? "");
+  const [price, setPrice] = useState(job.priceCents === null ? "" : (job.priceCents / 100).toFixed(2));
+  const [quantity, setQuantity] = useState(job.quantity === null ? "" : String(job.quantity));
+  const [simulation, setSimulation] = useState<AllocationPlan | null>(job.plan);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [adoptConfirmed, setAdoptConfirmed] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
-  const [discardReason, setDiscardReason] = useState("本批人工核对后决定不采用");
+  const [discardReason, setDiscardReason] = useState("本批人工核对后决定不再继续");
   const [visibleData, setVisibleData] = useState<VisibleData | undefined>();
   const [selectedFile, setSelectedFile] = useState("");
   const mutable = canWrite && job.status === "draft";
@@ -451,12 +449,12 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
   };
 
   return <section className="job-batch" aria-labelledby="job-batch-title">
-      <div className="job-batch-heading"><div><div className="job-batch-title-row"><span className="job-page-kicker">{job.parentJobId ? "新批次 · 接续已采用的剩余资金" : "新批次 · 本次导入资金"}</span><JobStatus status={job.status} /><span className="job-revision">版本 {job.revision}</span></div><h1 id="job-batch-title">{job.product || "填写本批商品"}</h1><p>批次 {job.id.slice(0, 8)} · 更新于 {readableDate(job.updatedAt)}</p></div><div className="job-batch-quick-actions"><Button type="button" variant="outline" size="sm" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === "refresh" ? "animate-spin" : ""} />刷新</Button><Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={onNewBatch}><Plus size={15} />新批次</Button></div></div>
+      <div className="job-batch-heading"><div><div className="job-batch-title-row"><span className="job-page-kicker">新批次 · 本次上传余额</span><JobStatus status={job.status} /><span className="job-revision">版本 {job.revision}</span></div><h1 id="job-batch-title">{job.product || "填写本批商品"}</h1><p>批次 {job.id.slice(0, 8)} · 更新于 {readableDate(job.updatedAt)}</p></div><div className="job-batch-quick-actions"><Button type="button" variant="outline" size="sm" disabled={!!busy} onClick={() => void refresh()}><RefreshCw size={14} className={busy === "refresh" ? "animate-spin" : ""} />刷新</Button><Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={onNewBatch}><Plus size={15} />新批次</Button></div></div>
 
     <StepRail current={step} />
     {error && <div className="job-page-error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}
     {job.warnings.map((warning, index) => <div className="job-page-warning" key={`${warning}-${index}`}><CircleAlert size={17} /><span>{warning}</span></div>)}
-    {!currentRuleVersion && job.plan && <div className="job-page-warning" role="status"><CircleAlert size={17} /><span>这批候选由旧分组规则生成，只能查阅。请从原始资金文件新建一批，用当前规则重新试算后再采用。</span></div>}
+    {!currentRuleVersion && job.plan && <div className="job-page-warning" role="status"><CircleAlert size={17} /><span>这批候选由旧分组规则生成，只能查阅。请从原始资金文件新建一批，用当前规则重新试算后再确认完成。</span></div>}
 
     <div className="job-layout">
       <div className="job-primary-column">
@@ -474,7 +472,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
             <div className="job-plan-summary"><span>试算结果</span><strong className="numeric">{money(finishedPlan.totalCents)}</strong><span>{quantityFormat(finishedPlan.quantity)} 件 · {finishedPlan.groups.length} 个费用分组</span><span className="job-plan-note"><LockKeyhole size={13} />试算不扣减已用资金</span></div>
             <SourceAllocationChart plan={finishedPlan} onSourceClick={browseSource} />
             <AllocationRows plan={finishedPlan} />
-            {mutable && <div className="job-prepare-bar"><div><strong>生成候选文件</strong><span>{job.templateFile ? "文件写入本批记录，需人工核对后采用。" : "上传开票模板后即可生成候选文件。"}</span></div><Button type="button" onClick={() => void prepare()} disabled={!simulation || !job.templateFile || !!busy}>{busy === "prepare" ? <LoaderCircle size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{busy === "prepare" ? "正在生成…" : "生成候选文件"}</Button></div>}
+            {mutable && <div className="job-prepare-bar"><div><strong>生成候选文件</strong><span>{job.templateFile ? "文件写入本批记录，需人工核对后确认完成。" : "上传开票模板后即可生成候选文件。"}</span></div><Button type="button" onClick={() => void prepare()} disabled={!simulation || !job.templateFile || !!busy}>{busy === "prepare" ? <LoaderCircle size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{busy === "prepare" ? "正在生成…" : "生成候选文件"}</Button></div>}
           </div>}
         </section>
 
@@ -499,14 +497,14 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
     </div>
 
     {(job.status === "prepared" || job.status === "adopted") && <section className="job-candidate" aria-labelledby="job-candidate-heading">
-      <div className="job-section-heading"><div><h2 id="job-candidate-heading">候选结果</h2><p>{job.status === "adopted" ? "这份剩余余额已标记为采用，可作为下一批输入。" : "先浏览并核对本批所有文件，再选择是否采用。"}</p></div><JobStatus status={job.status} /></div>
+      <div className="job-section-heading"><div><h2 id="job-candidate-heading">候选结果</h2><p>{job.status === "adopted" ? "本批已完成核对并归档。下一批需要重新上传余额表。" : "先浏览并核对本批所有文件，再确认本批是否完成。"}</p></div><JobStatus status={job.status} /></div>
       <div className="job-candidate-files">{resultFiles.map((file) => <a key={file.id} className="job-candidate-file" href={`/api/jobs?id=${encodeURIComponent(job.id)}&download=${encodeURIComponent(file.id)}`}><span className="job-candidate-file-icon"><FileSpreadsheet size={17} /></span><span><strong>{file.fileName}</strong><small>{file.role === "invoice" ? "开票单" : file.role === "source-marked" ? `来源标红表${file.priority ? ` · 优先级 ${file.priority}` : ""}` : file.role === "source-remaining" ? `本批后剩余表${file.priority ? ` · 优先级 ${file.priority}` : ""}` : "分摊核对记录"} · {(file.size / 1024).toFixed(1)} KB</small></span><ArrowDownToLine size={16} /></a>)}</div>
-      {job.taxPending > 0 && <p className="job-tax-warning"><CircleAlert size={16} />{job.taxPending} 项开票资料待核实。请查看开票单后再决定是否采用。</p>}
+      {job.taxPending > 0 && <p className="job-tax-warning"><CircleAlert size={16} />{job.taxPending} 项开票资料待核实。请查看开票单后再确认本批是否完成。</p>}
       {job.status === "prepared" && canWrite && currentRuleVersion && <div className="job-adopt-panel">
-        <label className="job-adopt-confirm"><input type="checkbox" checked={adoptConfirmed} onChange={(event) => setAdoptConfirmed(event.target.checked)} /><span>我已核对上方结果文件，确认将本批剩余表用作下一批余额。</span></label>
-        <div className="job-adopt-actions"><p><LockKeyhole size={14} />仅把采用操作记入本批，不会修改旧版共享账簿。</p><Button type="button" disabled={!adoptConfirmed || !!busy} onClick={() => void adopt()}>{busy === "adopt" ? <LoaderCircle size={16} className="animate-spin" /> : <Check size={16} />}{busy === "adopt" ? "正在记录…" : "确认采用剩余表"}</Button></div>
+        <label className="job-adopt-confirm"><input type="checkbox" checked={adoptConfirmed} onChange={(event) => setAdoptConfirmed(event.target.checked)} /><span>我已核对上方全部结果文件，确认本批处理完成。</span></label>
+        <div className="job-adopt-actions"><p><LockKeyhole size={14} />确认后只归档本批，不会保存或自动带入下一批余额。</p><Button type="button" disabled={!adoptConfirmed || !!busy} onClick={() => void adopt()}>{busy === "adopt" ? <LoaderCircle size={16} className="animate-spin" /> : <Check size={16} />}{busy === "adopt" ? "正在记录…" : "确认本批完成"}</Button></div>
       </div>}
-      {job.status === "adopted" && <div className="job-adopted-footer"><span><CircleCheck size={16} />已由 {job.adoptedBy || "操作人"} 于 {job.adoptedAt ? readableDate(job.adoptedAt) : "—"} 确认</span><Button type="button" variant="outline" onClick={() => void onChooseJob()}><ArrowUpRight size={15} />查看历史记录</Button><Button type="button" onClick={onContinueFrom}><Plus size={15} />用这份剩余资金新建</Button><Button type="button" variant="ghost" size="sm" onClick={onNewBatch}>从其他资金新建</Button></div>}
+      {job.status === "adopted" && <div className="job-adopted-footer"><span><CircleCheck size={16} />已由 {job.adoptedBy || "操作人"} 于 {job.adoptedAt ? readableDate(job.adoptedAt) : "—"} 确认完成</span><Button type="button" variant="outline" onClick={() => void onChooseJob()}><ArrowUpRight size={15} />查看历史记录</Button><Button type="button" onClick={onNewBatch}><Plus size={15} />新批次（需重新上传余额）</Button></div>}
     </section>}
 
     {job.status === "draft" && canWrite && job.sourceCount > 0 && <div className="job-discard-line"><button type="button" onClick={() => setDiscardOpen(true)} disabled={!!busy}>作废本批</button><span>只改变此批状态，不会更改上传文件。</span></div>}

@@ -8,7 +8,7 @@ function request(host:string,options:{origin?:string;proto?:string;forwardedHost
  if(options.proto)h.set('x-forwarded-proto',options.proto);
  if(options.forwardedHost)h.set('x-forwarded-host',options.forwardedHost);
  if(options.ip)h.set('x-forwarded-for',options.ip);
- return new Request('http://localhost:3028/api/workspace',{headers:h});
+ return new Request('http://localhost:3028/api/jobs',{headers:h});
 }
 
 test('public HTTPS is restricted to the configured host, protocol, and exact Origin',()=>{

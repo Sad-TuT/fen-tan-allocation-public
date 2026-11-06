@@ -1,5 +1,5 @@
 import { getAppUser } from '../../lib/app-auth';
-import { aiAsk, aiConfigured, aiParseDraft, aiPrecheck, aiWorkspaceMessage, aiWorkspacePrecheck } from '../../lib/ai';
+import { aiConfigured, aiWorkspaceMessage, aiWorkspacePrecheck } from '../../lib/ai';
 import { hasTrustedOrigin, requestAddress } from '../../lib/request-security';
 
 export const dynamic = 'force-dynamic';
@@ -65,9 +65,6 @@ export async function POST(request: Request) {
   if (!body) return reply({ error: '请求格式无效。' }, 415);
   const action = String(body.action ?? '');
   try {
-    if (action === 'parse') return reply({ ok: true, ...(await aiParseDraft(String(body.text ?? ''), user.userId)) });
-    if (action === 'precheck') return reply({ ok: true, ...(await aiPrecheck(String(body.batchId ?? ''), user.userId)) });
-    if (action === 'ask') return reply({ ok: true, ...(await aiAsk(String(body.question ?? ''), user.userId)) });
     if (action === 'workspace') {
       const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
       return reply({ ok: true, ...(await aiWorkspaceMessage({
