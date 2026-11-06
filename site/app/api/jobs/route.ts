@@ -2,9 +2,8 @@ import { getAppUser } from "../../lib/app-auth";
 import { hasTrustedOrigin, requestAddress } from "../../lib/request-security";
 import { tryAcquireUploadSlot } from "../../lib/upload-gate";
 import {
-  adoptProcessingJob, createProcessingJob, discardProcessingJob,
-  deleteProcessingJob,
-  downloadProcessingJobFile, getProcessingJob, listProcessingJobs, prepareProcessingJob,
+  adoptProcessingJob, createProcessingJob, deleteProcessingJob, discardProcessingJob,
+  downloadProcessingJobFile, downloadProcessingJobPackage, getProcessingJob, listProcessingJobs, prepareProcessingJob,
   previewProcessingJobFile, ProcessingJobError, simulateProcessingJob, uploadProcessingJobFile, pasteSourceProcessingJob,
 } from "../../lib/processing-jobs";
 
@@ -60,6 +59,22 @@ export async function GET(request: Request) {
     const params = new URL(request.url).searchParams;
     const id = params.get("id");
     if (!id) return reply(await listProcessingJobs(user));
+    if (params.get("package") === "all") {
+      const { fileName, fileCount, bytes } = await downloadProcessingJobPackage(id, user);
+      const output = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(output).set(bytes);
+      return new Response(output, {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/zip",
+          "Content-Disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(fileName),
+          "Content-Length": String(bytes.byteLength),
+          "X-Content-Type-Options": "nosniff",
+          "X-Allocation-File-Count": String(fileCount),
+        },
+      });
+    }
     const downloadId = params.get("download");
     if (downloadId) {
       const { file, bytes } = await downloadProcessingJobFile(id, downloadId, user);

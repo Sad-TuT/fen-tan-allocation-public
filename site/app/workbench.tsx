@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
-import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, CircleHelp, ClipboardCheck, FileSpreadsheet, LoaderCircle, LockKeyhole, Plus, RefreshCw, Search, Settings2, Trash2, Upload, X } from "lucide-react";
+import { Archive, ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, CircleHelp, ClipboardCheck, FileSpreadsheet, LoaderCircle, LockKeyhole, Plus, RefreshCw, Search, Settings2, Trash2, Upload, X } from "lucide-react";
 import { AiWorkspaceAssistant } from "./ai-panel";
 import { WorkspaceDataPreview, type VisibleData } from "./workspace-data-preview";
 import { Badge } from "@/components/ui/badge";
@@ -552,7 +552,7 @@ function BatchWorkspace({ job, userId, active, canWrite, onJobUpdate, onNewBatch
     </div>
 
     {(job.status === "prepared" || job.status === "adopted") && <section className="job-candidate" aria-labelledby="job-candidate-heading">
-      <div className="job-section-heading"><div><h2 id="job-candidate-heading">候选结果</h2><p>{job.status === "adopted" ? "本批已完成核对并归档。下一批需要重新上传余额表。" : "先浏览并核对本批所有文件，再确认本批是否完成。"}</p></div><JobStatus status={job.status} /></div>
+      <div className="job-section-heading"><div><h2 id="job-candidate-heading">候选结果</h2><p>{job.status === "adopted" ? "本批已完成核对并归档。下一批需要重新上传余额表。" : "先浏览并核对本批所有文件，再确认本批是否完成。"}</p></div><div className="job-candidate-heading-actions"><JobStatus status={job.status} /><a className="job-candidate-package" href={`/api/jobs?id=${encodeURIComponent(job.id)}&package=all`}><Archive size={16} /><span><strong>一键保存全部</strong><small>下载本批文件夹</small></span></a></div></div>
       <div className="job-candidate-files">{resultFiles.map((file) => <a key={file.id} className="job-candidate-file" href={`/api/jobs?id=${encodeURIComponent(job.id)}&download=${encodeURIComponent(file.id)}`}><span className="job-candidate-file-icon"><FileSpreadsheet size={17} /></span><span><strong>{file.fileName}</strong><small>{file.role === "invoice" ? "开票单" : file.role === "source-marked" ? `来源${file.priority ? String(file.priority).padStart(2, "0") : ""} · 已用金额标红` : file.role === "source-remaining" ? `来源${file.priority ? String(file.priority).padStart(2, "0") : ""} · 本批后剩余` : "分摊核对记录"} · {(file.size / 1024).toFixed(1)} KB</small></span><ArrowDownToLine size={16} /></a>)}</div>
       {job.taxPending > 0 && <p className="job-tax-warning"><CircleAlert size={16} />{job.taxPending} 项开票资料待核实。请查看开票单后再确认本批是否完成。</p>}
       {job.status === "prepared" && canWrite && currentRuleVersion && <div className="job-adopt-panel">

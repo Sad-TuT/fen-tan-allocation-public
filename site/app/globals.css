@@ -858,6 +858,13 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
 .job-ai-column [data-slot="card-header"] { padding-inline: 0; }
 .job-ai-column [data-slot="tabs-list"] { width: 100%; }
 .job-candidate { margin-top: 15px; }
+.job-candidate-heading-actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.job-candidate-package { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 5px 11px; color: #fff; background: #0878e8; border: 1px solid #0878e8; border-radius: 8px; text-decoration: none; box-shadow: 0 1px 2px rgba(0,80,160,.12); }
+.job-candidate-package:hover { color: #fff; background: #0069d5; border-color: #0069d5; }
+.job-candidate-package > svg { flex: 0 0 auto; }
+.job-candidate-package > span { display: grid; gap: 1px; line-height: 1.2; }
+.job-candidate-package strong { font-size: 11px; font-weight: 650; }
+.job-candidate-package small { color: rgba(255,255,255,.8); font-size: 9px; }
 .job-candidate-files { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 7px; margin: 12px 0; }
 .job-candidate-file { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 9px 10px; color: inherit; text-decoration: none; background: #fafafb; border: 1px solid #e9e9eb; border-radius: 8px; }
 .job-candidate-file:hover { background: #f6faff; border-color: #c8dff8; }
@@ -1042,6 +1049,7 @@ a:not([data-slot="button"]):focus-visible, input[type="checkbox"]:focus-visible 
   .job-data-table td { max-width: 225px; min-width: 62px; padding: 7px 8px; font-size: 10px; }
   .job-data-table th { padding: 7px 8px; font-size: 9px; }
   .job-candidate-files { grid-template-columns: minmax(0,1fr); }
+  .job-candidate-heading-actions { width: 100%; justify-content: space-between; }
   .job-adopt-actions { align-items: stretch; flex-direction: column; }
   .job-adopt-actions [data-slot="button"] { width: 100%; }
   .job-welcome { min-height: 0; grid-template-columns: minmax(0,1fr); gap: 15px; padding: 21px 17px; }

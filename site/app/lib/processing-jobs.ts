@@ -4,8 +4,8 @@ import ExcelJS from "exceljs";
 import { env } from "./node-runtime";
 import { ALLOCATION_RULE_VERSION, planAllocation, validateAllocationPlan } from "./allocation";
 import {
-  assertDistinctSourceBalance, digest, generateBatchFiles, parseSource, parseTaxOverrides, parseTaxes, type ImportedSource,
-  type ProductHistory, type TaxOverride, type TaxRecord,
+  assertDistinctSourceBalance, digest, generateBatchFiles, parseSource, parseTaxOverrides, parseTaxes,
+  sourceBalanceFingerprint, zipFiles, type ImportedSource, type ProductHistory, type TaxOverride, type TaxRecord,
 } from "./spreadsheets";
 import { normalizeSpreadsheetNamespaces } from "./xlsx-namespace-compat";
 import { validateXlsxArchive } from "./xlsx-limits";
@@ -17,6 +17,7 @@ import type {
 import type { AppUser } from "./app-auth";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_PACKAGE_BYTES = 40 * 1024 * 1024;
 const MAX_JOB_FILES = 30;
 const MAX_JOB_SOURCES = 10;
 const MAX_PREVIEW_COLUMNS = 100;
@@ -91,6 +92,20 @@ function batchNumber(value: unknown): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1) throw new ProcessingJobError("批次编号损坏，请停止操作并核实数据。", 500, "INVALID_BATCH_NUMBER");
   return number;
+}
+function packageFolderName(createdAt: string, product: string, totalCents: number): string {
+  const created = new Date(createdAt);
+  const productPart = product.trim().replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "_").replace(/[. ]+$/g, "").slice(0, 80);
+  if (Number.isNaN(created.getTime()) || !productPart || !Number.isSafeInteger(totalCents) || totalCents < 0) {
+    throw new ProcessingJobError("批次归档信息不完整，无法生成下载文件夹。", 500, "INVALID_PACKAGE_METADATA");
+  }
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(created);
+  const field = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)?.value ?? "";
+  const amount = totalCents % 100 === 0 ? String(totalCents / 100) : (totalCents / 100).toFixed(2);
+  return `${field("year")}${field("month")}${field("day")}_${field("hour")}${field("minute")}-${productPart}-${amount}元`;
 }
 async function readObject(key: string): Promise<Uint8Array> {
   const result = await bucket().get(key);
@@ -677,6 +692,33 @@ export async function downloadProcessingJobFile(id: unknown, fileId: unknown, us
   const file = data.files.find(item => item.id === fileId);
   if (!file) throw new ProcessingJobError("找不到本批文件。", 404, "FILE_NOT_FOUND");
   return { file: publicFile(file), bytes: await verifiedBytes(file) };
+}
+export async function downloadProcessingJobPackage(id: unknown, user: AppUser): Promise<{
+  fileName: string; folderName: string; fileCount: number; bytes: Uint8Array;
+}> {
+  if (user.mustChangePassword) throw new ProcessingJobError("请先修改初始密码。", 403, "PASSWORD_CHANGE_REQUIRED");
+  const { row, data } = await loadJob(id, user);
+  if (row.status !== "prepared" && row.status !== "adopted") {
+    throw new ProcessingJobError("生成候选文件后才能保存本批全部文件。", 409, "RESULT_PACKAGE_NOT_READY");
+  }
+  if (!data.product || !data.plan) throw new ProcessingJobError("本批结果信息不完整，无法打包。", 500, "INVALID_PACKAGE_METADATA");
+  const resultFiles = data.files.filter(file => (
+    file.role === "invoice" || file.role === "source-marked" || file.role === "source-remaining" || file.role === "audit"
+  ));
+  if (!resultFiles.length) throw new ProcessingJobError("本批没有可保存的结果文件。", 409, "RESULT_PACKAGE_EMPTY");
+  const names = new Set(resultFiles.map(file => file.fileName));
+  if (names.size !== resultFiles.length) throw new ProcessingJobError("本批结果文件存在重名，已停止打包。", 500, "RESULT_PACKAGE_NAME_COLLISION");
+  const files: { name: string; bytes: Uint8Array }[] = [];
+  let totalBytes = 0;
+  for (const file of resultFiles) {
+    const fileBytes = await verifiedBytes(file);
+    totalBytes += fileBytes.byteLength;
+    if (totalBytes > MAX_PACKAGE_BYTES) throw new ProcessingJobError("本批结果文件过大，无法一次打包。", 413, "RESULT_PACKAGE_TOO_LARGE");
+    files.push({ name: file.fileName, bytes: fileBytes });
+  }
+  const folderName = packageFolderName(row.created_at, data.product, data.plan.totalCents);
+  const bytes = await zipFiles(folderName, files);
+  return { fileName: `${folderName}.zip`, folderName, fileCount: files.length, bytes };
 }
 export type ProcessingAIContext = {
   jobId: string; status: ProcessingJobStatus; revision: number; product: string | null;

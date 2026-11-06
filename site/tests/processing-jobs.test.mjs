@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 registerHooks({ resolve(specifier, context, next) {
   if (specifier === 'server-only') return { url: 'data:text/javascript,export default {}', shortCircuit: true };
@@ -154,6 +155,17 @@ test('file-processing batches preserve cents, hash-bound review, and require a f
   assert.equal(invoicePreview.sheet.rows.length > 0, true);
   const invoiceDownload = await jobs.downloadProcessingJobFile(job.id, invoiceFile.id, owner);
   assert.equal(createHash('sha256').update(invoiceDownload.bytes).digest('hex'), invoiceFile.sha256);
+  const resultPackage = await jobs.downloadProcessingJobPackage(job.id, owner);
+  assert.match(resultPackage.fileName, /^\d{8}_\d{4}-合成商品-99元\.zip$/);
+  assert.equal(resultPackage.folderName, resultPackage.fileName.slice(0, -4));
+  assert.equal(resultPackage.fileCount, 6);
+  const archive = await JSZip.loadAsync(resultPackage.bytes);
+  const expectedPackageFiles = job.files
+    .filter(file => ['invoice', 'source-marked', 'source-remaining', 'audit'].includes(file.role))
+    .map(file => `${resultPackage.folderName}/${file.fileName}`)
+    .sort();
+  const actualPackageFiles = Object.keys(archive.files).filter(name => !archive.files[name].dir).sort();
+  assert.deepEqual(actualPackageFiles, expectedPackageFiles);
   const shared = await jobs.getProcessingJob(job.id, other).catch(error => error);
   assert.equal(shared.status, 404);
 
